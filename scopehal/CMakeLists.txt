@@ -8,20 +8,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 	pkg_check_modules(LXI liblxi QUIET IMPORTED_TARGET)
 	#WORKAROUND LXI on Debian Bullseye lacks a pkgconfig file
 	if(NOT LXI_FOUND)
-		find_library(LXI_LINK_LIBRARIES lxi)
+	find_library(LXI_LINK_LIBRARIES lxi)
 	endif()
 	if(LXI_LINK_LIBRARIES)
-		message("-- Found LXI: ${LXI_LINK_LIBRARIES}")
-		# LXI requires TIRPC but does not link it automatically
-		pkg_check_modules(TIRPC libtirpc QUIET IMPORTED_TARGET)
-		if(TIRPC_FOUND)
-			message("-- Found TIRPC: ${TIRPC_LINK_LIBRARIES}")
-		else()
-			message(FATAL_ERROR "TIRPC library is required for LXI to function. The LXI library was found, but TIRPC is missing.")
-		endif()
+	message("-- Found LXI: ${LXI_LINK_LIBRARIES}")
+	# LXI requires TIRPC but does not link it automatically
+	pkg_check_modules(TIRPC libtirpc QUIET IMPORTED_TARGET)
+	if(TIRPC_FOUND)
+		message("-- Found TIRPC: ${TIRPC_LINK_LIBRARIES}")
 	else()
-		message("-- LXI library not found, LXI (VXI-11/TCP and RAW/TCP ) instrument support will not be available.")
-		unset(LXI_LINK_LIBRARIES CACHE)
+		message(FATAL_ERROR "TIRPC library is required for LXI to function. The LXI library was found, but TIRPC is missing.")
+	endif()
+	else()
+	message("-- LXI library not found, LXI (VXI-11/TCP and RAW/TCP ) instrument support will not be available.")
+	unset(LXI_LINK_LIBRARIES CACHE)
 	endif()
 endif()
 
@@ -208,6 +208,7 @@ set(SCOPEHAL_SOURCES
 	SiglentVectorSignalGenerator.cpp
 	TektronixOscilloscope.cpp
 	TektronixHSIOscilloscope.cpp
+	TektronixMDO4000BOscilloscope.cpp
 	ThunderScopeOscilloscope.cpp
 	TinySA.cpp
 	UHDBridgeSDR.cpp
@@ -246,9 +247,9 @@ set(SCOPEHAL_SOURCES
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 	list(APPEND SCOPEHAL_SOURCES
-		# TMC is only supported on Linux for now.
-		# https://github.com/glscopeclient/scopehal/issues/519
-		SCPITMCTransport.cpp
+	# TMC is only supported on Linux for now.
+	# https://github.com/glscopeclient/scopehal/issues/519
+	SCPITMCTransport.cpp
 	)
 endif()
 
@@ -276,14 +277,14 @@ target_link_libraries(scopehal
 
 if(TARGET glslang::SPIRV)
 	target_link_libraries(scopehal
-		glslang::SPIRV
+	glslang::SPIRV
 	)
 endif()
 
 if(LXI_FOUND)
 	target_link_libraries(scopehal
-		PkgConfig::LXI
-		PkgConfig::TIRPC
+	PkgConfig::LXI
+	PkgConfig::TIRPC
 	)
 	target_compile_definitions(scopehal PUBLIC HAS_LXI)
 endif()
@@ -303,8 +304,8 @@ SYSTEM PUBLIC
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 4)
 	target_compile_definitions(scopehal
-		PRIVATE
-		VULKAN_HPP_TYPESAFE_CONVERSION=1
+	PRIVATE
+	VULKAN_HPP_TYPESAFE_CONVERSION=1
 	)
 endif()
 

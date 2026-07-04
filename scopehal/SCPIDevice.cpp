@@ -54,29 +54,32 @@ SCPIDevice::SCPIDevice(SCPITransport* transport, bool identify, unsigned int ide
 		}
 
 		bool succeeded = false;
-		for (int retry = 0; retry < 3; retry++)
+
+		//Aggressively drain any stale data the scope might have queued up
+		//(Tektronix scopes keep output buffers alive across TCP reconnect).
+		//Keep reading replies until we get something that looks like *IDN? output.
+		for (int retry = 0; retry < 10; retry++)
 		{
-			//Ask for the ID
 			m_transport->SendCommand("*IDN?");
-			string reply = m_transport->ReadReply();
+			string reply = Trim(m_transport->ReadReply());
+
 			char vendor[128] = "";
 			char model[128] = "";
 			char serial[128] = "";
 			char version[128] = "";
-			if(4 != sscanf(reply.c_str(), "%127[^,],%127[^,],%127[^,],%127s", vendor, model, serial, version))
+			if(4 == sscanf(reply.c_str(), "%127[^,],%127[^,],%127[^,],%127s", vendor, model, serial, version))
 			{
-				LogWarning("Bad IDN response %s\n", reply.c_str());
-				m_transport->FlushRXBuffer();
-				continue; // retry
-			}
-			m_vendor = vendor;
-			m_model = model;
-			m_serial = serial;
-			m_fwVersion = version;
+				m_vendor = vendor;
+				m_model = model;
+				m_serial = serial;
+				m_fwVersion = version;
 
-			succeeded = true;
-			m_transport->FlushRXBuffer(); // In case our *IDNs got queued behind each other (Tek...)
-			break; // success
+				succeeded = true;
+
+				//Discard any extra *IDN? responses we queued ahead
+				m_transport->FlushRXBuffer();
+				break;
+			}
 		}
 
 		if(sock_transport)

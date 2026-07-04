@@ -97,6 +97,10 @@ TektronixOscilloscope::TektronixOscilloscope(SCPITransport* transport)
 		m_family = FAMILY_MSO5;
 	else if(m_model.find("MSO6") == 0)
 		m_family = FAMILY_MSO6;
+	else if(m_model.find("MDO4") == 0)
+		m_family = FAMILY_MDO4;
+	else if(m_model.find("MDO3") == 0)
+		m_family = FAMILY_MDO4;
 	else
 		m_family = FAMILY_UNKNOWN;
 
@@ -270,35 +274,46 @@ TektronixOscilloscope::TektronixOscilloscope(SCPITransport* transport)
 			break;
 	}
 
-	string reply = m_transport->SendCommandQueuedWithReply("LICENSE:APPID?", false);
-	reply = reply.substr(1, reply.size() - 2); // Chop off quotes
-	vector<string> apps;
-	stringstream s_stream(reply);
-	while(s_stream.good())
+	//Detect DVM and AFG via license query (MSO5/6) or model-based (MDO4)
+	string reply;
+	if(m_family != FAMILY_MDO4)
 	{
-		string substr;
-		getline(s_stream, substr, ',');
-		apps.push_back(substr);
+		reply = m_transport->SendCommandQueuedWithReply("LICENSE:APPID?", false);
+		reply = reply.substr(1, reply.size() - 2); // Chop off quotes
+		vector<string> apps;
+		stringstream s_stream(reply);
+		while(s_stream.good()) {
+			string substr;
+			getline(s_stream, substr, ',');
+			apps.push_back(substr);
+		}
+
+		for (auto app : apps)
+		{
+			if (app == "DVM")
+			{
+				m_hasDVM = true;
+				LogDebug(" * Tek has DVM\n");
+			}
+			else if (app == "AFG")
+			{
+				m_hasAFG = true;
+				LogDebug(" * Tek has AFG\n");
+			}
+			else
+			{
+				LogDebug("(* Tek also has '%s' (ignored))\n", app.c_str());
+			}
+
+			// Bandwidth expanding options reflected in earlier query for max B/W
+		}
 	}
-
-	for (auto& app : apps)
+	else
 	{
-		if (app == "DVM")
-		{
-			m_hasDVM = true;
-			LogDebug(" * Tek has DVM\n");
-		}
-		else if (app == "AFG")
-		{
-			m_hasAFG = true;
-			LogDebug(" * Tek has AFG\n");
-		}
-		else
-		{
-			LogDebug("(* Tek also has '%s' (ignored))\n", app.c_str());
-		}
-
-		// Bandwidth expanding options reflected in earlier query for max B/W
+		//MDO4000B always has DVM and never has AFG
+		LogDebug(" * MDO4000 has DVM\n");
+		m_hasDVM = true;
+		m_hasAFG = false;
 	}
 
 	//Add AWG channel
@@ -1694,8 +1709,13 @@ void TektronixOscilloscope::ResynchronizeSCPI()
 		string reply;
 		if(prbs3[i])
 			reply = m_transport->SendCommandQueuedWithReply("*IDN?");	//should return a string starting with "TEKTRONIX"
-		else
-			reply = m_transport->SendCommandQueuedWithReply("HOR:MODE:RECO?");	//should return a number
+	else
+		{
+			if( (m_model.find("MDO4") == 0) || (m_model.find("MDO3") == 0) )
+				reply = m_transport->SendCommandQueuedWithReply("HOR:RECO?");
+			else
+				reply = m_transport->SendCommandQueuedWithReply("HOR:MODE:RECO?");
+		}	//should return a number
 
 		if(reply.find("TEKTRONIX") != string::npos)
 			replies[i] = 1;
