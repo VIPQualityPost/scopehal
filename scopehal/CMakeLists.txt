@@ -169,6 +169,7 @@ set(SCOPEHAL_SOURCES
 	VIOOutputChannel.cpp
 
 	AgilentMultimeter.cpp
+	Keysight34461AMultimeter.cpp
 	AgilentOscilloscope.cpp
 	AlientekPowerSupply.cpp
 	AntikernelLabsGPIO.cpp

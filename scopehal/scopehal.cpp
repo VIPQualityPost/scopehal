@@ -76,6 +76,7 @@
 #include "OwonXDMMultimeter.h"
 #include "RohdeSchwarzHMC8012Multimeter.h"
 #include "AgilentMultimeter.h"
+#include "Keysight34461AMultimeter.h"
 
 #include "OwonXDGFunctionGenerator.h"
 #include "SiglentFunctionGenerator.h"
@@ -341,6 +342,7 @@ void DriverStaticInit()
 	AddMultimeterDriverClass(AgilentMultimeter);
 	AddMultimeterDriverClass(OwonXDMMultimeter);
 	AddMultimeterDriverClass(RohdeSchwarzHMC8012Multimeter);
+	AddMultimeterDriverClass(Keysight34461AMultimeter);
 
 	AddPowerSupplyDriverClass(DemoPowerSupply);
 	AddPowerSupplyDriverClass(GWInstekGPDX303SPowerSupply);
