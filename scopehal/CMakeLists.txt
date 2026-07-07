@@ -222,6 +222,7 @@ set(SCOPEHAL_SOURCES
 	RidenPowerSupply.cpp
 	SinilinkPowerSupply.cpp
 	KuaiquPowerSupply.cpp
+	KeysightEDU36311APowerSupply.cpp
 
 	StandardColors.cpp
 	Filter.cpp
