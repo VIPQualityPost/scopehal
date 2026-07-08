@@ -59,7 +59,6 @@ endif()
 set(SCOPEHAL_SOURCES
 	base64.cpp
 	scopehal.cpp
-	avx_mathfun.cpp
 	VulkanInit.cpp
 
 	FileSystem.cpp
@@ -173,6 +172,7 @@ set(SCOPEHAL_SOURCES
 	AgilentOscilloscope.cpp
 	AlientekPowerSupply.cpp
 	AntikernelLabsGPIO.cpp
+	AntikernelLabsILA.cpp
 	AntikernelLabsSerdesILA8b10b.cpp
 	AntikernelLabsVIO.cpp
 	AntikernelLabsOscilloscope.cpp

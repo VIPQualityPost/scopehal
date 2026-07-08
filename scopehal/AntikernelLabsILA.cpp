@@ -30,15 +30,15 @@
 /**
 	@file
 	@author Andrew D. Zonenberg
-	@brief Implementation of AntikernelLabsSerdesILA8b10b
+	@brief Implementation of AntikernelLabsILA
 	@ingroup scopedrivers
  */
 
 #include "scopehal.h"
-#include "AntikernelLabsSerdesILA8b10b.h"
+#include "AntikernelLabsILA.h"
 #include "IBM8b10bWaveform.h"
 #include "EdgeTrigger.h"
-#include "CDR8B10BTrigger.h"
+#include <charconv>
 
 using namespace std;
 
@@ -50,23 +50,40 @@ using namespace std;
 
 	@param transport	SCPITransport pointing to the debug bridge server
  */
-AntikernelLabsSerdesILA8b10b::AntikernelLabsSerdesILA8b10b(SCPITransport* transport)
+AntikernelLabsILA::AntikernelLabsILA(SCPITransport* transport)
 	: SCPIDevice(transport)
 	, SCPIInstrument(transport)
 	, m_triggerArmed(false)
 	, m_triggerOneShot(false)
 	, m_triggerWordPosition(0)
 {
-	auto chan = new OscilloscopeChannel(
-		this,
-		"data",
-		"#ffff00",
-		Unit(Unit::UNIT_FS),
-		Unit(Unit::UNIT_COUNTS),
-		Stream::STREAM_TYPE_PROTOCOL,
-		0);
-	m_channels.push_back(chan);
-	chan->SetDefaultDisplayName();
+	uint32_t startpos = 0;
+	for(size_t i=0; i<32; i++)
+	{
+		string hwname = string("PROBE") + to_string(i);
+		auto name = Trim(m_transport->SendCommandQueuedWithReply(hwname + ":NAME?"));
+		auto width = stoi(Trim(m_transport->SendCommandQueuedWithReply(hwname + ":WIDTH?")));
+		if(width > 0)
+		{
+			m_channelWidths.push_back(width);
+			m_channelStarts.push_back(startpos);
+			startpos += width;
+
+			auto chan = new OscilloscopeChannel(
+				this,
+				hwname,
+				"#00ff00",
+				Unit(Unit::UNIT_FS),
+				Unit(Unit::UNIT_COUNTS),
+				(width > 1) ? Stream::STREAM_TYPE_DIGITAL_BUS : Stream::STREAM_TYPE_DIGITAL,
+				m_channels.size());
+
+			chan->SetDigitalWidth(0, width);
+
+			chan->SetDisplayName(name);
+			m_channels.push_back(chan);
+		}
+	}
 
 	m_memDepth = stoul(Trim(m_transport->SendCommandQueuedWithReply("MEM:DEPTH?")));
 	m_period = stoull(Trim(m_transport->SendCommandQueuedWithReply("MEM:PERIOD?"))) * 1000;
@@ -77,7 +94,7 @@ AntikernelLabsSerdesILA8b10b::AntikernelLabsSerdesILA8b10b(SCPITransport* transp
 	PullTrigger();
 }
 
-AntikernelLabsSerdesILA8b10b::~AntikernelLabsSerdesILA8b10b()
+AntikernelLabsILA::~AntikernelLabsILA()
 {
 }
 
@@ -85,17 +102,17 @@ AntikernelLabsSerdesILA8b10b::~AntikernelLabsSerdesILA8b10b()
 // Accessors
 
 ///@brief Return the constant driver name
-string AntikernelLabsSerdesILA8b10b::GetDriverNameInternal()
+string AntikernelLabsILA::GetDriverNameInternal()
 {
-	return "akl.ila.8b10b";
+	return "akl.ila";
 }
 
-unsigned int AntikernelLabsSerdesILA8b10b::GetInstrumentTypes() const
+unsigned int AntikernelLabsILA::GetInstrumentTypes() const
 {
 	return Instrument::INST_OSCILLOSCOPE;
 }
 
-uint32_t AntikernelLabsSerdesILA8b10b::GetInstrumentTypesForChannel(size_t /*i*/) const
+uint32_t AntikernelLabsILA::GetInstrumentTypesForChannel(size_t /*i*/) const
 {
 	return Instrument::INST_OSCILLOSCOPE;
 }
@@ -103,93 +120,98 @@ uint32_t AntikernelLabsSerdesILA8b10b::GetInstrumentTypesForChannel(size_t /*i*/
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Device interface functions
 
-void AntikernelLabsSerdesILA8b10b::FlushConfigCache()
+void AntikernelLabsILA::FlushConfigCache()
 {
 }
 
-OscilloscopeChannel* AntikernelLabsSerdesILA8b10b::GetExternalTrigger()
+OscilloscopeChannel* AntikernelLabsILA::GetExternalTrigger()
 {
 	return nullptr;
 }
 
-bool AntikernelLabsSerdesILA8b10b::IsChannelEnabled(size_t i)
+bool AntikernelLabsILA::IsChannelEnabled([[maybe_unused]] size_t i)
 {
-	return (i == 0);
+	return true;
 }
 
-void AntikernelLabsSerdesILA8b10b::EnableChannel(size_t /*i*/)
-{
-}
-
-void AntikernelLabsSerdesILA8b10b::DisableChannel(size_t /*i*/)
+void AntikernelLabsILA::EnableChannel(size_t /*i*/)
 {
 }
 
-vector<OscilloscopeChannel::CouplingType> AntikernelLabsSerdesILA8b10b::GetAvailableCouplings(size_t /*i*/)
+void AntikernelLabsILA::DisableChannel(size_t /*i*/)
+{
+}
+
+vector<OscilloscopeChannel::CouplingType> AntikernelLabsILA::GetAvailableCouplings(size_t /*i*/)
 {
 	vector<OscilloscopeChannel::CouplingType> ret;
 	return ret;
 }
 
-OscilloscopeChannel::CouplingType AntikernelLabsSerdesILA8b10b::GetChannelCoupling(size_t /*i*/)
+OscilloscopeChannel::CouplingType AntikernelLabsILA::GetChannelCoupling(size_t /*i*/)
 {
 	return OscilloscopeChannel::COUPLE_DC_50;
 }
 
-void AntikernelLabsSerdesILA8b10b::SetChannelCoupling(size_t /*i*/, OscilloscopeChannel::CouplingType /*type*/)
+void AntikernelLabsILA::SetChannelCoupling(size_t /*i*/, OscilloscopeChannel::CouplingType /*type*/)
 {
 }
 
-double AntikernelLabsSerdesILA8b10b::GetChannelAttenuation(size_t /*i*/)
+double AntikernelLabsILA::GetChannelAttenuation(size_t /*i*/)
 {
 	return 0;
 }
 
-void AntikernelLabsSerdesILA8b10b::SetChannelAttenuation(size_t /*i*/, double /*atten*/)
+void AntikernelLabsILA::SetChannelAttenuation(size_t /*i*/, double /*atten*/)
 {
 }
 
-string AntikernelLabsSerdesILA8b10b::GetProbeName(size_t /*i*/)
+string AntikernelLabsILA::GetProbeName(size_t /*i*/)
 {
 	return "";
 }
 
-unsigned int AntikernelLabsSerdesILA8b10b::GetChannelBandwidthLimit(size_t /*i*/)
+bool AntikernelLabsILA::IsDigitalThresholdConfigurable()
+{
+	return false;
+}
+
+unsigned int AntikernelLabsILA::GetChannelBandwidthLimit(size_t /*i*/)
 {
 	return 0;
 }
 
-void AntikernelLabsSerdesILA8b10b::SetChannelBandwidthLimit(size_t /*i*/, unsigned int /*limit_mhz*/)
+void AntikernelLabsILA::SetChannelBandwidthLimit(size_t /*i*/, unsigned int /*limit_mhz*/)
 {
 }
 
-vector<unsigned int> AntikernelLabsSerdesILA8b10b::GetChannelBandwidthLimiters(size_t /*i*/)
+vector<unsigned int> AntikernelLabsILA::GetChannelBandwidthLimiters(size_t /*i*/)
 {
 	vector<unsigned int> ret;
 	return ret;
 }
 
-float AntikernelLabsSerdesILA8b10b::GetChannelVoltageRange(size_t /*i*/, size_t /*stream*/)
+float AntikernelLabsILA::GetChannelVoltageRange(size_t /*i*/, size_t /*stream*/)
 {
 	return 0;
 }
 
-void AntikernelLabsSerdesILA8b10b::SetChannelVoltageRange(size_t /*i*/, size_t /*stream*/, float /*range*/)
+void AntikernelLabsILA::SetChannelVoltageRange(size_t /*i*/, size_t /*stream*/, float /*range*/)
 {
 }
 
-float AntikernelLabsSerdesILA8b10b::GetChannelOffset(size_t /*i*/, size_t /*stream*/)
+float AntikernelLabsILA::GetChannelOffset(size_t /*i*/, size_t /*stream*/)
 {
 	return 0;
 }
 
-void AntikernelLabsSerdesILA8b10b::SetChannelOffset(size_t /*i*/, size_t /*stream*/, float /*offset*/)
+void AntikernelLabsILA::SetChannelOffset(size_t /*i*/, size_t /*stream*/, float /*offset*/)
 {
 }
 
 //////////////////////////////////////////////////////////////////////////////// </Digital>
 
-Oscilloscope::TriggerMode AntikernelLabsSerdesILA8b10b::PollTrigger()
+Oscilloscope::TriggerMode AntikernelLabsILA::PollTrigger()
 {
 	if (!m_triggerArmed)
 		return TRIGGER_MODE_STOP;
@@ -203,63 +225,121 @@ Oscilloscope::TriggerMode AntikernelLabsSerdesILA8b10b::PollTrigger()
 		return TRIGGER_MODE_RUN;
 }
 
-bool AntikernelLabsSerdesILA8b10b::AcquireData()
+bool AntikernelLabsILA::AcquireData()
 {
-	//TODO: fine adjust trigger phase so it points to the actual symbol that it starts at
-
-	double now = GetTime();
-
-	//Make the output waveform
-	auto cap = new IBM8b10bWaveform;
-	cap->m_timescale = m_period;
-	cap->m_triggerPhase = 0;
-	cap->m_startTimestamp = floor(now);
-	cap->m_startFemtoseconds = (now - floor(now)) * FS_PER_SECOND;
-	cap->Resize(m_memDepth);
-	cap->PrepareForCpuAccess();
-
 	//Get the data
-	auto data = Trim(m_transport->SendCommandQueuedWithReply("DATA?"));
+	auto data = m_transport->SendCommandQueuedWithReply("DATA?");
 	auto fields = explode(data, ',');
 
-	//Unpack the fields into 8b10b symbols
-	for(size_t i=0; i<fields.size(); i++)
+	double now = GetTime();
+	int64_t sec = floor(now);
+	int64_t fs = (now - floor(now)) * FS_PER_SECOND;
+
+	//Set up output waveforms
+	vector<WaveformBase*> waves;
+	map<size_t, UniformDigitalWaveform*> digwaves;
+	map<size_t, UniformDigitalBusWaveform32*> bwave32;
+
+	SequenceSet s;
+	for(size_t i=0; i<m_channelWidths.size(); i++)
 	{
-		//Crack the word out into 8b10b fields
-		uint64_t w = stoull(fields[i], nullptr, 16);
+		//Skip multi-bit streams for now
+		auto w = m_channelWidths[i];
 
-		for(size_t j=0; j<4; j++)
+		if(w == 1)
 		{
-			//Swap adjacent symbol pairs to correct endianness issue
-			auto rj = j ^ 1;
+			//It's a single bit digital waveform if we get here
+			auto u = new UniformDigitalWaveform;
+			u->m_timescale = m_period;
+			u->m_triggerPhase = 0;
+			u->m_startTimestamp = sec;
+			u->m_startFemtoseconds = fs;
+			u->Resize(m_memDepth);
+			u->PrepareForCpuAccess();
+			u->MarkModifiedFromCpu();
 
-			bool data_is_ctl = ((w >> (32 + rj)) & 1) != 0;
-			bool symbol_err = ((w >> (36 + rj)) & 1) != 0;
-			bool disparity_err = ((w >> (40 + rj)) & 1) != 0;
-			bool disparity = ((w >> (44 + rj)) & 1) != 0;
-			uint8_t wdata = (w >> (8 * rj)) & 0xff;
+			waves.push_back(u);
+			digwaves[i] = u;
+			s[m_channels[i]] = u;
+		}
 
-			auto idx = i*4 + j;
+		else if(w <= 32)
+		{
+			auto u = new UniformDigitalBusWaveform32;
+			u->m_timescale = m_period;
+			u->m_triggerPhase = 0;
+			u->m_startTimestamp = sec;
+			u->m_startFemtoseconds = fs;
+			u->Resize(m_memDepth);
+			u->PrepareForCpuAccess();
+			u->MarkModifiedFromCpu();
 
-			//we dont support uniform 8b10b waveforms currently so fake it
-			cap->m_offsets[idx] = idx;
-			cap->m_durations[idx] = 1;
-			cap->m_samples[idx] = IBM8b10bSymbol(
-				data_is_ctl,
-				symbol_err,
-				0,
-				disparity_err,
-				wdata,
-				disparity);
+			waves.push_back(u);
+			bwave32[i] = u;
+			s[m_channels[i]] = u;
+		}
+
+		else
+			waves.push_back(nullptr);
+	}
+
+	//Unpack each sample's data
+	vector<uint8_t> row;
+	size_t nbytes = fields[0].length() / 2;
+	row.resize(nbytes);
+	for(size_t i=0; i<m_memDepth; i++)
+	{
+		//Convert the hex data into binary and invert the byte ordering so LSB is in position 0
+		auto p = fields[i].c_str();
+		for(size_t j=0; j<nbytes; j++)
+			from_chars(p + j*2, p + j*2 + 2, row[nbytes - j - 1], 16);
+
+		for(size_t j=0; j<m_channelWidths.size(); j++)
+		{
+			auto dw = digwaves[j];
+			auto d32 = bwave32[j];
+			auto width = m_channelWidths[j];
+
+			auto bitstart = m_channelStarts[j];
+			auto bytestart = bitstart / 8;
+			auto bitpos = bitstart % 8;
+
+			//Single bit signal
+			if(dw)
+			{
+				if( (row[bytestart] >> bitpos) & 1)
+					dw->m_samples[i] = true;
+			}
+
+			//Vector signal of <= 32 bits
+			else if(d32)
+			{
+				//TODO make this more efficient and not copy a bit at a time
+				uint32_t tmp = 0;
+				for(size_t k=0; k<width; k++)
+				{
+					if( (row[bytestart] >> bitpos) & 1)
+						tmp |= (1 << k);
+
+					//bump bit position
+					bitpos ++;
+					if(bitpos >= 8)
+					{
+						bytestart ++;
+						bitpos -= 8;
+					}
+				}
+
+				d32->m_samples[i] = tmp;
+			}
+
+			else
+				continue;
 		}
 	}
 
-	cap->MarkModifiedFromCpu();
-
 	//Save newly created waveform
 	m_pendingWaveformsMutex.lock();
-		SequenceSet s;
-		s[m_channels[0]] = cap;
 		m_pendingWaveforms.push_back(s);
 	m_pendingWaveformsMutex.unlock();
 
@@ -272,131 +352,132 @@ bool AntikernelLabsSerdesILA8b10b::AcquireData()
 	return true;
 }
 
-void AntikernelLabsSerdesILA8b10b::Start()
+void AntikernelLabsILA::Start()
 {
 	m_triggerArmed = true;
 	m_triggerOneShot = false;
 	m_transport->SendCommand("TRIG:ARM");
 }
 
-void AntikernelLabsSerdesILA8b10b::StartSingleTrigger()
+void AntikernelLabsILA::StartSingleTrigger()
 {
 	m_triggerArmed = true;
 	m_triggerOneShot = true;
 	m_transport->SendCommand("TRIG:ARM");
 }
 
-void AntikernelLabsSerdesILA8b10b::Stop()
+void AntikernelLabsILA::Stop()
 {
 	m_triggerArmed = false;
 	m_triggerOneShot = true;
 	m_transport->SendCommand("TRIG:STOP");
 }
 
-void AntikernelLabsSerdesILA8b10b::ForceTrigger()
+void AntikernelLabsILA::ForceTrigger()
 {
 	StartSingleTrigger();
 }
 
-bool AntikernelLabsSerdesILA8b10b::IsTriggerArmed()
+bool AntikernelLabsILA::IsTriggerArmed()
 {
 	return m_triggerArmed;
 }
 
-vector<uint64_t> AntikernelLabsSerdesILA8b10b::GetSampleRatesNonInterleaved()
+vector<uint64_t> AntikernelLabsILA::GetSampleRatesNonInterleaved()
 {
 	vector<uint64_t> ret;
 	ret.push_back(m_srate);
 	return ret;
 }
 
-vector<uint64_t> AntikernelLabsSerdesILA8b10b::GetSampleRatesInterleaved()
+vector<uint64_t> AntikernelLabsILA::GetSampleRatesInterleaved()
 {
 	return GetSampleRatesNonInterleaved();
 }
 
-set<Oscilloscope::InterleaveConflict> AntikernelLabsSerdesILA8b10b::GetInterleaveConflicts()
+set<Oscilloscope::InterleaveConflict> AntikernelLabsILA::GetInterleaveConflicts()
 {
 	set<Oscilloscope::InterleaveConflict> ret;
 	return ret;
 }
 
-vector<uint64_t> AntikernelLabsSerdesILA8b10b::GetSampleDepthsNonInterleaved()
+vector<uint64_t> AntikernelLabsILA::GetSampleDepthsNonInterleaved()
 {
 	vector<uint64_t> ret;
 	ret.push_back(m_memDepth);
 	return ret;
 }
 
-vector<uint64_t> AntikernelLabsSerdesILA8b10b::GetSampleDepthsInterleaved()
+vector<uint64_t> AntikernelLabsILA::GetSampleDepthsInterleaved()
 {
 	return GetSampleRatesNonInterleaved();
 }
 
-uint64_t AntikernelLabsSerdesILA8b10b::GetSampleRate()
+bool AntikernelLabsILA::HasInterleavingControls()
+{
+	return false;
+}
+
+uint64_t AntikernelLabsILA::GetSampleRate()
 {
 	return m_srate;
 }
 
-uint64_t AntikernelLabsSerdesILA8b10b::GetSampleDepth()
+uint64_t AntikernelLabsILA::GetSampleDepth()
 {
 	return m_memDepth;
 }
 
-void AntikernelLabsSerdesILA8b10b::SetSampleDepth(uint64_t /*depth*/)
+void AntikernelLabsILA::SetSampleDepth(uint64_t /*depth*/)
 {
 }
 
-void AntikernelLabsSerdesILA8b10b::SetSampleRate(uint64_t /*rate*/)
+void AntikernelLabsILA::SetSampleRate(uint64_t /*rate*/)
 {
 
 }
 
-void AntikernelLabsSerdesILA8b10b::SetTriggerOffset(int64_t offset)
+void AntikernelLabsILA::SetTriggerOffset(int64_t offset)
 {
-	uint32_t numWords = m_memDepth / 4;
-
-	int64_t idx = offset / (4 * m_period);
+	int64_t idx = offset / m_period;
 	idx = max(idx, (int64_t) 0);
 	m_triggerWordPosition = idx;
-	m_triggerWordPosition = min(m_triggerWordPosition, numWords - 1);
+	m_triggerWordPosition = min(m_triggerWordPosition, m_memDepth - 1);
 
 	m_transport->SendCommandQueued(string("TRIG:POS ") + to_string(m_triggerWordPosition));
 }
 
-int64_t AntikernelLabsSerdesILA8b10b::GetTriggerOffset()
+int64_t AntikernelLabsILA::GetTriggerOffset()
 {
 	LogTrace("Trigger offset %u\n", m_triggerWordPosition);
 
-	return m_triggerWordPosition * 4 * m_period;
+	return m_triggerWordPosition * m_period;
 }
 
-bool AntikernelLabsSerdesILA8b10b::IsInterleaving()
+bool AntikernelLabsILA::IsInterleaving()
 {
 	return false;
 }
 
-bool AntikernelLabsSerdesILA8b10b::SetInterleaving(bool /*combine*/)
+bool AntikernelLabsILA::SetInterleaving(bool /*combine*/)
 {
 	return false;
 }
 
-void AntikernelLabsSerdesILA8b10b::PullTrigger()
+void AntikernelLabsILA::PullTrigger()
 {
-	//for now assume CDR trigger just so we have something
-
 	//Clear out any triggers of the wrong type
-	if( (m_trigger != nullptr) && (dynamic_cast<CDR8B10BTrigger*>(m_trigger) != nullptr) )
+	if( (m_trigger != nullptr) && (dynamic_cast<EdgeTrigger*>(m_trigger) != nullptr) )
 	{
 		delete m_trigger;
 		m_trigger = nullptr;
 	}
 
 	//Create a new trigger if necessary
-	auto trig = dynamic_cast<CDR8B10BTrigger*>(m_trigger);
+	auto trig = dynamic_cast<EdgeTrigger*>(m_trigger);
 	if(trig == nullptr)
 	{
-		trig = new CDR8B10BTrigger(this);
+		trig = new EdgeTrigger(this);
 		m_trigger = trig;
 	}
 
@@ -407,6 +488,6 @@ void AntikernelLabsSerdesILA8b10b::PullTrigger()
 	m_triggerWordPosition = stoi(m_transport->SendCommandQueuedWithReply("TRIG:POS?"));
 }
 
-void AntikernelLabsSerdesILA8b10b::PushTrigger()
+void AntikernelLabsILA::PushTrigger()
 {
 }

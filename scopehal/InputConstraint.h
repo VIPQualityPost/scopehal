@@ -288,23 +288,25 @@ protected:
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /**
-	@brief Match if the input is a scalar with a specific width
+	@brief Match if the input's digital width matches the requested value
+
+	Does *not* verify the input is a digital scalar, waveform, or bus; separate constraints are needed for that
 
 	@ingroup core
  */
-class InputConstraintScalarWidth : public InputConstraint
+class InputConstraintDigitalWidth : public InputConstraint
 {
 public:
-	InputConstraintScalarWidth(FlowGraphNode* sink, size_t width)
+	InputConstraintDigitalWidth(FlowGraphNode* sink, size_t width)
 		: InputConstraint(sink)
 		, m_width(width)
 	{}
 
 	virtual bool Check(StreamDescriptor source) override
-	{ return (m_width == source.GetDigitalScalarWidth() ); }
+	{ return (m_width == source.GetDigitalWidth() ); }
 
 	virtual std::string ToString() override
-	{ return std::string("Scalar bus width is ") + std::to_string(m_width);  }
+	{ return std::string("Digital signal width is ") + std::to_string(m_width);  }
 
 protected:
 	size_t m_width;

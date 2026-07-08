@@ -30,12 +30,12 @@
 /**
 	@file
 	@author Andrew D. Zonenberg
-	@brief Declaration of AntikernelLabsSerdesILA8b10b
+	@brief Declaration of AntikernelLabsILA
 	@ingroup scopedrivers
  */
 
-#ifndef AntikernelLabsSerdesILA8b10b_h
-#define AntikernelLabsSerdesILA8b10b_h
+#ifndef AntikernelLabsILA_h
+#define AntikernelLabsILA_h
 
 class EdgeTrigger;
 
@@ -43,16 +43,16 @@ class EdgeTrigger;
 	@brief Protocol analyzer driver for Linux SocketCAN API
 	@ingroup scopedrivers
  */
-class AntikernelLabsSerdesILA8b10b
+class AntikernelLabsILA
 	: public virtual SCPIOscilloscope
 {
 public:
-	AntikernelLabsSerdesILA8b10b(SCPITransport* transport);
-	virtual ~AntikernelLabsSerdesILA8b10b();
+	AntikernelLabsILA(SCPITransport* transport);
+	virtual ~AntikernelLabsILA();
 
 	//not copyable or assignable
-	AntikernelLabsSerdesILA8b10b(const AntikernelLabsSerdesILA8b10b& rhs) =delete;
-	AntikernelLabsSerdesILA8b10b& operator=(const AntikernelLabsSerdesILA8b10b& rhs) =delete;
+	AntikernelLabsILA(const AntikernelLabsILA& rhs) =delete;
+	AntikernelLabsILA& operator=(const AntikernelLabsILA& rhs) =delete;
 
 public:
 	//Device information
@@ -79,6 +79,7 @@ public:
 	virtual float GetChannelOffset(size_t i, size_t stream) override;
 	virtual void SetChannelOffset(size_t i, size_t stream, float offset) override;
 	virtual std::string GetProbeName(size_t i) override;
+	virtual bool IsDigitalThresholdConfigurable() override;
 
 	//Triggering
 	virtual Oscilloscope::TriggerMode PollTrigger() override;
@@ -105,6 +106,7 @@ public:
 	virtual int64_t GetTriggerOffset() override;
 	virtual bool IsInterleaving() override;
 	virtual bool SetInterleaving(bool combine) override;
+	virtual bool HasInterleavingControls() override;
 
 protected:
 
@@ -126,9 +128,12 @@ protected:
 	///@brief Trigger position
 	uint32_t m_triggerWordPosition;
 
+	std::vector<uint32_t> m_channelWidths;
+	std::vector<uint32_t> m_channelStarts;
+
 public:
 	static std::string GetDriverNameInternal();
-	OSCILLOSCOPE_INITPROC(AntikernelLabsSerdesILA8b10b)
+	OSCILLOSCOPE_INITPROC(AntikernelLabsILA)
 };
 
 #endif

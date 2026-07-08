@@ -1,8 +1,8 @@
 /***********************************************************************************************************************
 *                                                                                                                      *
-* libscopeexports                                                                                                      *
+* libscopeprotocols                                                                                                    *
 *                                                                                                                      *
-* Copyright (c) 2012-2022 Andrew D. Zonenberg and contributors                                                         *
+* Copyright (c) 2012-2026 Andrew D. Zonenberg and contributors                                                         *
 * All rights reserved.                                                                                                 *
 *                                                                                                                      *
 * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the     *
@@ -30,55 +30,59 @@
 /**
 	@file
 	@author Andrew D. Zonenberg
-	@brief Implementation of ExportWizard
+	@brief Declaration of APBDecoder
  */
-#include "scopeexports.h"
-#include "ExportWizard.h"
+#ifndef APBDecoder_h
+#define APBDecoder_h
 
-using namespace std;
+#include "../scopehal/PacketDecoder.h"
 
-ExportWizard::CreateMapType ExportWizard::m_createprocs;
-
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Construction / destruction
-
-ExportWizard::ExportWizard(const vector<OscilloscopeChannel*>& channels)
-	: m_channels(channels)
+class APBSymbol
 {
-}
+public:
 
-ExportWizard::~ExportWizard()
+	APBSymbol()
+	{}
+
+	APBSymbol(bool write, uint32_t addr, uint32_t data)
+	 : m_write(write)
+	 , m_addr(addr)
+	 , m_data(data)
+	{}
+
+	bool m_write;
+	uint32_t m_addr;
+	uint32_t m_data;
+	//TODO: byte masking
+
+	bool operator== (const APBSymbol& s) const
+	{
+		return (m_write == s.m_write) && (m_addr == s.m_addr) && (m_data == s.m_data);
+	}
+};
+
+class APBWaveform : public SparseWaveform<APBSymbol>
 {
-}
+public:
+	APBWaveform () : SparseWaveform<APBSymbol>() {};
+	virtual std::string GetText(size_t) override;
+	virtual std::string GetColor(size_t) override;
+};
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Object creation
-
-void ExportWizard::DoAddExportWizardClass(const string& name, CreateProcType proc)
+class APBDecoder : public PacketDecoder
 {
-	m_createprocs[name] = proc;
-}
+public:
+	APBDecoder(const std::string& color);
 
-void ExportWizard::EnumExportWizards(vector<string>& names)
-{
-	for(CreateMapType::iterator it=m_createprocs.begin(); it != m_createprocs.end(); ++it)
-		names.push_back(it->first);
-	std::sort(names.begin(), names.end());
-}
+	virtual void Refresh(vk::raii::CommandBuffer& cmdBuf, std::shared_ptr<QueueHandle> queue) override;
 
-ExportWizard* ExportWizard::CreateExportWizard(const string& name, const vector<OscilloscopeChannel*>& channels)
-{
-	if(m_createprocs.find(name) != m_createprocs.end())
-		return m_createprocs[name](channels);
+	static std::string GetProtocolName();
 
-	LogError("Invalid export wizard name: %s\n", name.c_str());
-	return NULL;
-}
+	std::vector<std::string> GetHeaders() override;
 
-////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// Event handlers
+	PROTOCOL_DECODER_INITPROC(APBDecoder)
 
-void ExportWizard::on_cancel()
-{
-	hide();
-}
+protected:
+};
+
+#endif
