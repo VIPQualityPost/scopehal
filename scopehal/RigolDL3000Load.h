@@ -85,10 +85,22 @@ public:
 	static std::vector<SCPIInstrumentModel> GetDriverSupportedModels()
 	{
 		return {
-			{"Rigol DL3021", {{ SCPITransportType::TRANSPORT_LAN, "192.168.1.x:5025" }}},
-			{"Rigol DL3021A", {{ SCPITransportType::TRANSPORT_LAN, "192.168.1.x:5025" }}},
-			{"Rigol DL3031", {{ SCPITransportType::TRANSPORT_LAN, "192.168.1.x:5025" }}},
-			{"Rigol DL3031A", {{ SCPITransportType::TRANSPORT_LAN, "192.168.1.x:5025" }}}
+			{"Rigol DL3021", {
+				{ SCPITransportType::TRANSPORT_LAN, "192.168.1.x:5025" },
+				{ SCPITransportType::TRANSPORT_USBTMC, "/dev/usbtmc<x>" },
+			}},
+			{"Rigol DL3021A", {
+				{ SCPITransportType::TRANSPORT_LAN, "192.168.1.x:5025" },
+				{ SCPITransportType::TRANSPORT_USBTMC, "/dev/usbtmc<x>" },
+			}},
+			{"Rigol DL3031", {
+				{ SCPITransportType::TRANSPORT_LAN, "192.168.1.x:5025" },
+				{ SCPITransportType::TRANSPORT_USBTMC, "/dev/usbtmc<x>" },
+			}},
+			{"Rigol DL3031A", {
+				{ SCPITransportType::TRANSPORT_LAN, "192.168.1.x:5025" },
+				{ SCPITransportType::TRANSPORT_USBTMC, "/dev/usbtmc<x>" },
+			}},
 		};
 	}
 };

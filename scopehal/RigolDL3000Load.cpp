@@ -104,7 +104,8 @@ Load::LoadMode RigolDL3000Load::GetLoadMode(size_t /*channel*/)
 	else if(reply == "CP")
 		return MODE_CONSTANT_POWER;
 
-	LogWarning("[RigolDL3000Load::GetLoadMode] Unknown mode %s\n", reply.c_str());
+	// NONE is returned when the load input is off and the mode is not yet set.
+	// Default to CC (the power-on default).
 	return MODE_CONSTANT_CURRENT;
 }
 
