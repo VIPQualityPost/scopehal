@@ -92,6 +92,7 @@
 #include "KeysightEDU36311APowerSupply.h"
 
 #include "SiglentLoad.h"
+#include "RigolDL3000Load.h"
 
 #include "AseqSpectrometer.h"
 
@@ -335,6 +336,7 @@ void DriverStaticInit()
 	AddFunctionGeneratorDriverClass(SiglentFunctionGenerator);
 
 	AddLoadDriverClass(SiglentLoad);
+	AddLoadDriverClass(RigolDL3000Load);
 
 	AddMiscInstrumentDriverClass(AntikernelLabsGPIO);
 	AddMiscInstrumentDriverClass(AntikernelLabsVIO);

@@ -215,6 +215,7 @@ set(SCOPEHAL_SOURCES
 	UHDBridgeSDR.cpp
 	HP662xAPowerSupply.cpp
 	RigolDP8xxPowerSupply.cpp
+	RigolDL3000Load.cpp
 	RohdeSchwarzOscilloscope.cpp
 	RSRTO6Oscilloscope.cpp
 	RohdeSchwarzHMC8012Multimeter.cpp
