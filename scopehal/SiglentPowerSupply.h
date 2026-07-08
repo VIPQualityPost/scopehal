@@ -2,7 +2,7 @@
 *                                                                                                                      *
 * libscopehal v0.1                                                                                                     *
 *                                                                                                                      *
-* Copyright (c) 2012-2023 Andrew D. Zonenberg and contributors                                                         *
+* Copyright (c) 2012-2026 Andrew D. Zonenberg and contributors                                                         *
 * All rights reserved.                                                                                                 *
 *                                                                                                                      *
 * Redistribution and use in source and binary forms, with or without modification, are permitted provided that the     *
@@ -19,7 +19,7 @@
 *                                                                                                                      *
 * THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED   *
 * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL *
-* THE AUTHORS BE HELD LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES        *
+* THE AUTHORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES        *
 * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR       *
 * BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT *
 * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE       *
@@ -27,11 +27,26 @@
 *                                                                                                                      *
 ***********************************************************************************************************************/
 
+/**
+	@file
+	@brief Declaration of SiglentPowerSupply
+	@ingroup psudrivers
+ */
+
 #ifndef SiglentPowerSupply_h
 #define SiglentPowerSupply_h
 
 /**
-	@brief A Siglent SPD3303x power supply
+	@brief A Siglent SPD series power supply (SPD1168X, SPD3303X-E, etc.)
+
+	Each getter queries the instrument directly via SCPI. No caching layer.
+	Setters use SendCommandQueued (fire-and-forget). The base class handles
+	populating scalar streams by calling our getters.
+
+	The SPD series does not distinguish between set-point and measured output
+	via separate SCPI queries — CH<n>:VOLT? is used for both GetPowerVoltageActual
+	and GetPowerVoltageNominal (same for current). MEASure subsystem is documented
+	by Siglent but may timeout on older firmware versions.
  */
 class SiglentPowerSupply
 	: public virtual SCPIPowerSupply
@@ -47,12 +62,13 @@ public:
 	//Device capabilities
 	virtual bool SupportsIndividualOutputSwitching() override;
 	virtual bool SupportsVoltageCurrentControl(int chan) override;
+	virtual bool SupportsOvercurrentShutdown() override;
 
-	//Read sensors
-	virtual double GetPowerVoltageActual(int chan) override;	//actual voltage after current limiting
-	virtual double GetPowerVoltageNominal(int chan) override;	//set point
-	virtual double GetPowerCurrentActual(int chan) override;	//actual current drawn by the load
-	virtual double GetPowerCurrentNominal(int chan) override;	//current limit
+	//Read sensors — each hits SCPI directly (no cache)
+	virtual double GetPowerVoltageActual(int chan) override;
+	virtual double GetPowerVoltageNominal(int chan) override;
+	virtual double GetPowerCurrentActual(int chan) override;
+	virtual double GetPowerCurrentNominal(int chan) override;
 	virtual bool GetPowerChannelActive(int chan) override;
 
 	//Configuration
@@ -61,14 +77,32 @@ public:
 	virtual void SetPowerChannelActive(int chan, bool on) override;
 	virtual bool IsPowerConstantCurrent(int chan) override;
 
+	//Overcurrent / overvoltage protection (SPD1000X series via SCPI)
+	virtual bool GetPowerOvercurrentShutdownEnabled(int chan) override;
+	virtual void SetPowerOvercurrentShutdownEnabled(int chan, bool enable) override;
+	virtual bool GetPowerOvercurrentShutdownTripped(int chan) override;
+
 protected:
+	/// @brief Query SYST:STAT? and return the hex status word
 	unsigned int GetStatusRegister();
 
-	bool m_ch3on;
+	//Model-specific properties set in constructor from *IDN?
+	int m_numChannels;			// 1: SPD1168X/SPD1305X, 3: SPD3303X-E
+	bool m_hasOCP;				// SCPI OVP/OCP support (SPD1000X yes, SPD3303X no)
+	bool m_ch3on;				// CH3 output state (no SCPI query available on SPD3303X)
 
 public:
 	static std::string GetDriverNameInternal();
 	POWER_INITPROC(SiglentPowerSupply);
+
+	static std::vector<SCPIInstrumentModel> GetDriverSupportedModels()
+	{
+		return {
+			{"Siglent SPD1168X", {{ SCPITransportType::TRANSPORT_LAN, "" }}},
+			{"Siglent SPD1305X", {{ SCPITransportType::TRANSPORT_LAN, "" }}},
+			{"Siglent SPD3303X-E", {{ SCPITransportType::TRANSPORT_LAN, "" }}}
+		};
+	}
 };
 
 #endif
