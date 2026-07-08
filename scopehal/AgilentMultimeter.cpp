@@ -73,7 +73,7 @@ AgilentMultimeter::AgilentMultimeter(SCPITransport* transport)
 	//m_transport->SendCommandQueuedWithReply("*RST");
 
 	// Clear errors
-	m_transport->SendCommandQueuedWithReply("*CLS");
+	m_transport->SendCommand("*CLS");
 
 	//prefetch operating mode
 	GetMeterMode();
