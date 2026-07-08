@@ -98,9 +98,9 @@ public:
 	static std::vector<SCPIInstrumentModel> GetDriverSupportedModels()
 	{
 		return {
-			{"Siglent SPD1168X", {{ SCPITransportType::TRANSPORT_LAN, "" }}},
-			{"Siglent SPD1305X", {{ SCPITransportType::TRANSPORT_LAN, "" }}},
-			{"Siglent SPD3303X-E", {{ SCPITransportType::TRANSPORT_LAN, "" }}}
+			{"Siglent SPD1168X", {{ SCPITransportType::TRANSPORT_LAN, "192.168.1.x:5025" }}},
+			{"Siglent SPD1305X", {{ SCPITransportType::TRANSPORT_LAN, "192.168.1.x:5025" }}},
+			{"Siglent SPD3303X-E", {{ SCPITransportType::TRANSPORT_LAN, "192.168.1.x:5025" }}}
 		};
 	}
 };

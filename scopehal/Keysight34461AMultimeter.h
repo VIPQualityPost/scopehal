@@ -78,11 +78,11 @@ public:
 	{
 		return {
 #ifdef _WIN32
-			{"Keysight 34461A", {{ SCPITransportType::TRANSPORT_LAN, "<ip_address>:5025" }}},
+			{"Keysight 34461A", {{ SCPITransportType::TRANSPORT_LAN, "192.168.1.x:5025" }}},
 			{"Keysight 34461A", {{ SCPITransportType::TRANSPORT_USBTMC, "USB::<vendor>::<product>::<serial>::INSTR" }}},
 			{"Keysight 34461A", {{ SCPITransportType::TRANSPORT_UART, "COM<x>" }}}
 #else
-			{"Keysight 34461A", {{ SCPITransportType::TRANSPORT_LAN, "<ip_address>:5025" }}},
+			{"Keysight 34461A", {{ SCPITransportType::TRANSPORT_LAN, "192.168.1.x:5025" }}},
 			{"Keysight 34461A", {{ SCPITransportType::TRANSPORT_USBTMC, "/dev/usbtmc<x>" }}},
 			{"Keysight 34461A", {{ SCPITransportType::TRANSPORT_UART, "/dev/ttyUSB<x>" }}}
 #endif
