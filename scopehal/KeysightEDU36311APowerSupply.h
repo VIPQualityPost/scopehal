@@ -106,7 +106,10 @@ public:
 	static std::vector<SCPIInstrumentModel> GetDriverSupportedModels()
 	{
 		return {
-        {"Keysight EDU36311A", {{ SCPITransportType::TRANSPORT_LAN, "192.168.x.x" }}}
+        {"Keysight EDU36311A", {
+            { SCPITransportType::TRANSPORT_LAN, "192.168.x.x" },
+            { SCPITransportType::TRANSPORT_USBTMC, "/dev/usbtmc<x>" },
+        }},
         };
 	}
 };
