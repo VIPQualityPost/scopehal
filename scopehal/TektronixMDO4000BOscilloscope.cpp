@@ -88,6 +88,10 @@ TektronixMDO4000BOscilloscope::TektronixMDO4000BOscilloscope(SCPITransport* tran
 			"#ff6400",
 			m_channels.size());
 		m_channels.push_back(rfchan);
+
+		//Set initial display range: assume ~100 dB full scale
+		m_channelVoltageRanges[m_spectrumChannelBase] = 100;
+		m_channelOffsets[m_spectrumChannelBase] = -50;
 	}
 
 	//Add digital channels if present
@@ -112,6 +116,10 @@ TektronixMDO4000BOscilloscope::TektronixMDO4000BOscilloscope(SCPITransport* tran
 			m_channels.push_back(chan);
 		}
 	}
+
+	//Re-detect probe/channel state now that we're fully constructed
+	//(the base class constructor's DetectProbes call had wrong virtual dispatch)
+	FlushConfigCache();
 }
 
 TektronixMDO4000BOscilloscope::~TektronixMDO4000BOscilloscope()
@@ -160,12 +168,13 @@ bool TektronixMDO4000BOscilloscope::IsChannelEnabled(size_t i)
 		return m_channelsEnabled[i];
 	}
 
-	//RF channel is always on if present
+	//RF channel
 	if(m_hasRF && (i == m_spectrumChannelBase))
 	{
+		string reply = m_transport->SendCommandQueuedWithReply("SELECT:RF_NORMAL?");
 		lock_guard<recursive_mutex> lock(m_cacheMutex);
-		m_channelsEnabled[i] = true;
-		return true;
+		m_channelsEnabled[i] = (reply == "1");
+		return m_channelsEnabled[i];
 	}
 
 	//Digital channels
@@ -199,7 +208,7 @@ void TektronixMDO4000BOscilloscope::EnableChannel(size_t i)
 	if(i < m_analogChannelCount)
 		m_transport->SendCommandQueued(string("SELECT:CH") + to_string(i+1) + " 1");
 	else if(m_hasRF && (i == m_spectrumChannelBase))
-	{} // RF is always on
+		m_transport->SendCommandQueued("SELECT:RF_NORMAL 1");
 	else if(m_digitalChannelCountMDO > 0 && (i >= m_digitalChannelBaseMDO) &&
 		(i < m_digitalChannelBaseMDO + m_digitalChannelCountMDO))
 	{
@@ -216,7 +225,7 @@ void TektronixMDO4000BOscilloscope::DisableChannel(size_t i)
 	if(i < m_analogChannelCount)
 		m_transport->SendCommandQueued(string("SELECT:CH") + to_string(i+1) + " 0");
 	else if(m_hasRF && (i == m_spectrumChannelBase))
-	{} // RF is always on
+		m_transport->SendCommandQueued("SELECT:RF_NORMAL 0");
 	else if(m_digitalChannelCountMDO > 0 && (i >= m_digitalChannelBaseMDO) &&
 		(i < m_digitalChannelBaseMDO + m_digitalChannelCountMDO))
 	{
@@ -390,6 +399,22 @@ float TektronixMDO4000BOscilloscope::GetChannelOffset(size_t i, size_t /*stream*
 			return m_channelOffsets[i];
 	}
 
+	//RF spectrum channel
+	if(m_hasRF && (i == m_spectrumChannelBase))
+	{
+		//Query reference level and scale from the instrument
+		float refLevel_w = stof(m_transport->SendCommandQueuedWithReply("RF:REFLEVEL?"));
+		float scale_db = stof(m_transport->SendCommandQueuedWithReply("RF:SCALE?"));
+		//Convert reference level from Watts to dBm
+		float refLevel_dbm = 10.0f * log10f(refLevel_w * 1000.0f);
+		//Offset is the center of the display: ref - scale*5
+		float offset = refLevel_dbm - scale_db * 5;
+		lock_guard<recursive_mutex> lock(m_cacheMutex);
+		m_channelOffsets[i] = offset;
+		m_channelVoltageRanges[i] = scale_db * 10;
+		return offset;
+	}
+
 	if(!IsAnalog(i))
 		return 0;
 
@@ -403,6 +428,19 @@ float TektronixMDO4000BOscilloscope::GetChannelOffset(size_t i, size_t /*stream*
 
 void TektronixMDO4000BOscilloscope::SetChannelOffset(size_t i, size_t /*stream*/, float offset)
 {
+	//RF spectrum channel
+	if(m_hasRF && (i == m_spectrumChannelBase))
+	{
+		lock_guard<recursive_mutex> lock(m_cacheMutex);
+		m_channelOffsets[i] = offset;
+		float scale_db = m_channelVoltageRanges[i] / 10;
+		//offset = refLevel_dbm - scale*5 => refLevel_dbm = offset + scale*5
+		float refLevel_dbm = offset + scale_db * 5;
+		float refLevel_w = powf(10.0f, refLevel_dbm / 10.0f) / 1000.0f;
+		m_transport->SendCommandQueued(string("RF:REFLEVEL ") + to_string_sci(refLevel_w));
+		return;
+	}
+
 	if(!IsAnalog(i))
 		return;
 
@@ -410,6 +448,45 @@ void TektronixMDO4000BOscilloscope::SetChannelOffset(size_t i, size_t /*stream*/
 	m_channelOffsets[i] = offset;
 	m_transport->SendCommandQueued(
 		GetOscilloscopeChannel(i)->GetHwname() + ":OFFS " + to_string(-offset));
+}
+
+float TektronixMDO4000BOscilloscope::GetChannelVoltageRange(size_t i, size_t /*stream*/)
+{
+	//Check cache
+	{
+		lock_guard<recursive_mutex> lock(m_cacheMutex);
+		if(m_channelVoltageRanges.find(i) != m_channelVoltageRanges.end())
+			return m_channelVoltageRanges[i];
+	}
+
+	//RF spectrum channel
+	if(m_hasRF && (i == m_spectrumChannelBase))
+	{
+		float scale_db = stof(m_transport->SendCommandQueuedWithReply("RF:SCALE?"));
+		float range = scale_db * 10;
+		lock_guard<recursive_mutex> lock(m_cacheMutex);
+		m_channelVoltageRanges[i] = range;
+		return range;
+	}
+
+	//Analog channels: delegate to base class
+	return TektronixOscilloscope::GetChannelVoltageRange(i, 0);
+}
+
+void TektronixMDO4000BOscilloscope::SetChannelVoltageRange(size_t i, size_t /*stream*/, float range)
+{
+	//RF spectrum channel
+	if(m_hasRF && (i == m_spectrumChannelBase))
+	{
+		lock_guard<recursive_mutex> lock(m_cacheMutex);
+		m_channelVoltageRanges[i] = range;
+		float scale_db = range / 10;
+		m_transport->SendCommandQueued(string("RF:SCALE ") + to_string_sci(scale_db));
+		return;
+	}
+
+	//Analog channels: delegate to base class
+	TektronixOscilloscope::SetChannelVoltageRange(i, 0, range);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -480,7 +557,8 @@ void TektronixMDO4000BOscilloscope::StartSingleTrigger()
 void TektronixMDO4000BOscilloscope::Stop()
 {
 	m_triggerArmed = false;
-	m_transport->SendCommandQueued("ACQ:STATE STOP");
+	m_transport->FlushCommandQueue();
+	m_transport->SendCommandImmediate("ACQ:STATE STOP");
 }
 
 void TektronixMDO4000BOscilloscope::ForceTrigger()
@@ -926,16 +1004,24 @@ bool TektronixMDO4000BOscilloscope::AcquireRFData(
 	size_t nsamples = msglen / 4;
 
 	auto cap = new UniformAnalogWaveform;
-	cap->m_timescale = (size_t)(preamble.xincrement * (double)FS_PER_SECOND);
-	cap->m_triggerPhase = 0;
+	cap->m_timescale = (int64_t)(preamble.xincrement);
+	cap->m_triggerPhase = (int64_t)(preamble.xzero);
 	cap->m_startTimestamp = time(nullptr);
 	double t = GetTime();
 	cap->m_startFemtoseconds = (t - floor(t)) * FS_PER_SECOND;
 	cap->Resize(nsamples);
 	cap->PrepareForCpuAccess();
 
+	//The scope returns RF power in Watts, but the SpectrumChannel expects dBm.
+	//Convert: dBm = 10 * log10(W * 1000)
 	for(size_t j = 0; j < nsamples; j++)
-		cap->m_samples[j] = preamble.ymult * samples[j] + preamble.yzero;
+	{
+		float power_w = preamble.ymult * samples[j] + preamble.yzero;
+		//Clamp near-zero values to avoid log10(-inf)
+		if(power_w < 1e-15f)
+			power_w = 1e-15f;
+		cap->m_samples[j] = 10.0f * log10f(power_w * 1000.0f);
+	}
 
 	cap->MarkSamplesModifiedFromCpu();
 
@@ -1475,6 +1561,11 @@ bool TektronixMDO4000BOscilloscope::SetInterleaving(bool /*combine*/)
 	return false;
 }
 
+bool TektronixMDO4000BOscilloscope::HasInterleavingControls()
+{
+	return false;
+}
+
 vector<uint64_t> TektronixMDO4000BOscilloscope::GetSampleRatesNonInterleaved()
 {
 	vector<uint64_t> ret;
@@ -1635,22 +1726,27 @@ int64_t TektronixMDO4000BOscilloscope::GetSpan()
 	return m_span;
 }
 
-void TektronixMDO4000BOscilloscope::SetCenterFrequency(size_t /*channel*/, int64_t freq)
+void TektronixMDO4000BOscilloscope::SetCenterFrequency(size_t channel, int64_t freq)
 {
 	m_transport->SendCommandQueued(string("RF:FREQ ") + to_string(freq));
+	m_channelCenterFrequencies[channel] = freq;
 	m_rbwValid = false;
 }
 
 int64_t TektronixMDO4000BOscilloscope::GetCenterFrequency(size_t channel)
 {
-	if(m_hasRF && (channel == m_spectrumChannelBase))
+	if(m_hasRF)
 	{
 		auto it = m_channelCenterFrequencies.find(channel);
 		if(it != m_channelCenterFrequencies.end())
 			return it->second;
+
+		auto freq = stoll(m_transport->SendCommandQueuedWithReply("RF:FREQ?"));
+		m_channelCenterFrequencies[channel] = freq;
+		return freq;
 	}
 
-	return stoll(m_transport->SendCommandQueuedWithReply("RF:FREQ?"));
+	return 0;
 }
 
 void TektronixMDO4000BOscilloscope::SetResolutionBandwidth(int64_t rbw)

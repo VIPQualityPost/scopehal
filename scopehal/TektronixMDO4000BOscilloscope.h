@@ -82,6 +82,8 @@ public:
 	virtual std::vector<unsigned int> GetChannelBandwidthLimiters(size_t i) override;
 	virtual float GetChannelOffset(size_t i, size_t stream) override;
 	virtual void SetChannelOffset(size_t i, size_t stream, float offset) override;
+	virtual float GetChannelVoltageRange(size_t i, size_t stream) override;
+	virtual void SetChannelVoltageRange(size_t i, size_t stream, float range) override;
 
 	//Triggering
 	virtual Oscilloscope::TriggerMode PollTrigger() override;
@@ -109,6 +111,7 @@ public:
 	virtual int64_t GetTriggerOffset() override;
 	virtual bool IsInterleaving() override;
 	virtual bool SetInterleaving(bool combine) override;
+	virtual bool HasInterleavingControls() override;
 
 	//Logic analyzer - MDO4000B supports D0-D15 via MSO pod
 	virtual std::vector<Oscilloscope::DigitalBank> GetDigitalBanks() override;
