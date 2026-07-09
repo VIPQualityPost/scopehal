@@ -201,6 +201,7 @@ set(SCOPEHAL_SOURCES
 	PicoVNA.cpp
 	RigolFunctionGenerator.cpp
 	RigolOscilloscope.cpp
+	RigolSpectrumAnalyzer.cpp
 	RSRTB2kOscilloscope.cpp
 	SiglentLoad.cpp
 	SiglentFunctionGenerator.cpp

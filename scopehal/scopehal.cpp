@@ -56,6 +56,7 @@
 #include "MagnovaOscilloscope.h"
 #include "PicoOscilloscope.h"
 #include "RigolOscilloscope.h"
+#include "RigolSpectrumAnalyzer.h"
 #include "RohdeSchwarzOscilloscope.h"
 #include "RSRTB2kOscilloscope.h"
 #include "RSRTO6Oscilloscope.h"
@@ -317,6 +318,7 @@ void DriverStaticInit()
 	AddDriverClass(KeysightDCA);
 	AddDriverClass(PicoOscilloscope);
 	AddDriverClass(RigolOscilloscope);
+	AddDriverClass(RigolSpectrumAnalyzer);
 	AddDriverClass(RohdeSchwarzOscilloscope);
 	AddDriverClass(RSRTB2kOscilloscope);
 	AddDriverClass(RSRTO6Oscilloscope);
