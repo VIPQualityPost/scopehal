@@ -60,6 +60,7 @@ public:
 	virtual bool GetFunctionChannelActive(int chan) override;
 	virtual void SetFunctionChannelActive(int chan, bool on) override;
 
+	virtual bool HasFunctionDutyCycleControls(int chan) override;
 	virtual float GetFunctionChannelDutyCycle(int chan) override;
 	virtual void SetFunctionChannelDutyCycle(int chan, float duty) override;
 
@@ -76,7 +77,12 @@ public:
 	virtual void SetFunctionChannelShape(int chan, WaveShape shape) override;
 
 	virtual bool HasFunctionRiseFallTimeControls(int chan) override;
+	virtual float GetFunctionChannelRiseTime(int chan) override;
+	virtual void SetFunctionChannelRiseTime(int chan, float fs) override;
+	virtual float GetFunctionChannelFallTime(int chan) override;
+	virtual void SetFunctionChannelFallTime(int chan, float fs) override;
 
+	virtual bool HasFunctionImpedanceControls(int chan) override;
 	virtual OutputImpedance GetFunctionChannelOutputImpedance(int chan) override;
 	virtual void SetFunctionChannelOutputImpedance(int chan, OutputImpedance z) override;
 
@@ -84,7 +90,63 @@ public:
 	static std::string GetDriverNameInternal();
 	GENERATOR_INITPROC(SiglentFunctionGenerator)
 
+	static std::vector<SCPIInstrumentModel> GetDriverSupportedModels()
+	{
+		return {
+			{"Siglent SDG2000X", {
+				{ SCPITransportType::TRANSPORT_LAN, "<ip_address>:5025" },
+				{ SCPITransportType::TRANSPORT_USBTMC, "/dev/usbtmc<x>" },
+			}},
+			{"Siglent SDG1000X", {
+				{ SCPITransportType::TRANSPORT_LAN, "<ip_address>:5025" },
+				{ SCPITransportType::TRANSPORT_USBTMC, "/dev/usbtmc<x>" },
+			}},
+			{"Siglent SDG6000X/X-E", {
+				{ SCPITransportType::TRANSPORT_LAN, "<ip_address>:5025" },
+				{ SCPITransportType::TRANSPORT_USBTMC, "/dev/usbtmc<x>" },
+			}},
+			{"Siglent SDG7000A", {
+				{ SCPITransportType::TRANSPORT_LAN, "<ip_address>:5025" },
+				{ SCPITransportType::TRANSPORT_USBTMC, "/dev/usbtmc<x>" },
+			}},
+			{"Siglent SDG1000", {
+				{ SCPITransportType::TRANSPORT_LAN, "<ip_address>:5025" },
+				{ SCPITransportType::TRANSPORT_USBTMC, "/dev/usbtmc<x>" },
+			}},
+			{"Siglent SDG5000", {
+				{ SCPITransportType::TRANSPORT_LAN, "<ip_address>:5025" },
+				{ SCPITransportType::TRANSPORT_USBTMC, "/dev/usbtmc<x>" },
+			}},
+			{"Siglent SDG800", {
+				{ SCPITransportType::TRANSPORT_LAN, "<ip_address>:5025" },
+				{ SCPITransportType::TRANSPORT_USBTMC, "/dev/usbtmc<x>" },
+			}},
+		};
+	}
+
 protected:
+
+	/**
+		@brief Internal channel class that exposes a public parameter accessor so the
+		driver can add custom channel-level parameters.
+	 */
+	class SiglentFunctionGeneratorChannel : public FunctionGeneratorChannel
+	{
+	public:
+		SiglentFunctionGeneratorChannel(
+			FunctionGenerator* gen,
+			const std::string& hwname,
+			const std::string& color,
+			size_t index)
+			: FunctionGeneratorChannel(gen, hwname, color, index)
+		{}
+
+		virtual ~SiglentFunctionGeneratorChannel()
+		{}
+
+		FilterParameter& GetParam(const std::string& name)
+		{ return m_parameters[name]; }
+	};
 
 	//Config cache
 	bool m_cachedFrequencyValid[2];
@@ -100,6 +162,19 @@ protected:
 
 	WaveShape m_cachedWaveShape[2];
 	bool m_cachedWaveShapeValid[2];
+
+	bool m_cachedDutyCycleValid[2];
+	float m_cachedDutyCycle[2];
+
+	bool m_cachedRiseTimeValid[2];
+	float m_cachedRiseTime[2];
+	bool m_cachedFallTimeValid[2];
+	float m_cachedFallTime[2];
+
+	bool m_cachedCombine[2];
+	bool m_cachedCombineValid[2];
+
+	bool m_supportsCHDR;
 
 	std::string RemoveHeader(const std::string& str);
 

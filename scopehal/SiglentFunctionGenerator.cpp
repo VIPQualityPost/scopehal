@@ -47,14 +47,36 @@ SiglentFunctionGenerator::SiglentFunctionGenerator(SCPITransport* transport)
 	, SCPIInstrument(transport)
 {
 	//All SDG series have two channels
-	m_channels.push_back(new FunctionGeneratorChannel(this, "C1", "#008000", 0));
-	m_channels.push_back(new FunctionGeneratorChannel(this, "C2", "#ffff00", 1));
+	m_channels.push_back(new SiglentFunctionGeneratorChannel(this, "C1", "#008000", 0));
+	m_channels.push_back(new SiglentFunctionGeneratorChannel(this, "C2", "#ffff00", 1));
 
 	FlushConfigCache();
 
-	//Echoing causes problems for us, but most models don't allow us to turn it off!
-	//Turn it on for everything so behavior is at least consistent.
-	m_transport->SendCommandQueued("CHDR ON");
+	//Detect if CHDR is supported.
+	//SDG2000X, SDG1000X, SDG6000X/X-E, and SDG7000A do NOT support CHDR.
+	//SDG800, SDG1000, and SDG5000 support CHDR.
+	//Echoing causes problems for us when enabled, so turn it on for models that support it
+	//to get consistent behavior.
+	m_supportsCHDR = true;
+	if(m_model.find("SDG2") != string::npos)
+		m_supportsCHDR = false;
+	else if(m_model.find("SDG1") != string::npos)
+		m_supportsCHDR = false;
+	else if(m_model.find("SDG6") != string::npos)
+		m_supportsCHDR = false;
+	else if(m_model.find("SDG7") != string::npos)
+		m_supportsCHDR = false;
+
+	if(m_supportsCHDR)
+		m_transport->SendCommandQueued("CHDR ON");
+
+	//Add waveform combine parameter to each channel (supported on SDG2000X, SDG1000X, SDG6000X/X-E, SDG7000A)
+	for(size_t i=0; i<m_channels.size(); i++)
+	{
+		auto chan = dynamic_cast<SiglentFunctionGeneratorChannel*>(m_channels[i]);
+		if(chan)
+			chan->GetParam("Combine") = FilterParameter(FilterParameter::TYPE_BOOL, Unit(Unit::UNIT_COUNTS));
+	}
 }
 
 SiglentFunctionGenerator::~SiglentFunctionGenerator()
@@ -79,6 +101,37 @@ uint32_t SiglentFunctionGenerator::GetInstrumentTypesForChannel(size_t i) const
 
 bool SiglentFunctionGenerator::AcquireData()
 {
+	for(size_t i=0; i<m_channels.size(); i++)
+	{
+		auto cname = m_channels[i]->GetHwname();
+		auto pchan = dynamic_cast<SiglentFunctionGeneratorChannel*>(m_channels[i]);
+		if(!pchan)
+			continue;
+
+		auto& param = pchan->GetParam("Combine");
+		bool uiRequest = param.GetBoolVal();
+
+		//Push UI parameter change to hardware
+		if(!m_cachedCombineValid[i] || (uiRequest != m_cachedCombine[i]))
+		{
+			if(uiRequest)
+				m_transport->SendCommandQueued(cname + ":CMBN ON");
+			else
+				m_transport->SendCommandQueued(cname + ":CMBN OFF");
+			m_cachedCombine[i] = uiRequest;
+			m_cachedCombineValid[i] = true;
+		}
+
+		//Read hardware state back (in case it was changed from the front panel)
+		auto reply = RemoveHeader(m_transport->SendCommandQueuedWithReply(cname + ":CMBN?"));
+		bool hwState = (Trim(reply) == "ON");
+		if(hwState != param.GetBoolVal())
+		{
+			param.SetBoolVal(hwState);
+			m_cachedCombine[i] = hwState;
+		}
+	}
+
 	return true;
 }
 
@@ -113,6 +166,18 @@ void SiglentFunctionGenerator::FlushConfigCache()
 
 		m_cachedWaveShape[i] = SHAPE_SINE;
 		m_cachedWaveShapeValid[i] = false;
+
+		m_cachedDutyCycle[i] = 0;
+		m_cachedDutyCycleValid[i] = false;
+
+		m_cachedRiseTime[i] = 0;
+		m_cachedRiseTimeValid[i] = false;
+
+		m_cachedFallTime[i] = 0;
+		m_cachedFallTimeValid[i] = false;
+
+		m_cachedCombine[i] = false;
+		m_cachedCombineValid[i] = false;
 	}
 }
 
@@ -138,11 +203,15 @@ void SiglentFunctionGenerator::ParseOutputState(const string& str, size_t i)
 
 	//field 1 is always LOAD
 	//field 2 is impedance
-	if(fields[2] == "HZ")
-		m_cachedImpedance[i] = IMPEDANCE_HIGH_Z;
-	else
-		m_cachedImpedance[i] = IMPEDANCE_50_OHM;
-	m_cachedImpedanceValid[i] = true;
+	//On SDG series, impedance is shared across both channels, so cache for both
+	for(size_t j=0; j<m_channels.size(); j++)
+	{
+		if(fields[2] == "HZ")
+			m_cachedImpedance[j] = IMPEDANCE_HIGH_Z;
+		else
+			m_cachedImpedance[j] = IMPEDANCE_50_OHM;
+		m_cachedImpedanceValid[j] = true;
+	}
 
 	//TODO: output invert
 }
@@ -169,9 +238,13 @@ void SiglentFunctionGenerator::ParseBasicWaveform(const string& str, size_t i)
 	m_cachedAmplitudeValid[i] = false;
 	m_cachedOffsetValid[i] = false;
 	m_cachedFrequencyValid[i] = false;
+	m_cachedDutyCycleValid[i] = false;
+	m_cachedRiseTimeValid[i] = false;
+	m_cachedFallTimeValid[i] = false;
 
 	Unit volts(Unit::UNIT_VOLTS);
 	Unit hz(Unit::UNIT_HZ);
+	Unit sec(Unit::UNIT_FS);
 	for(auto it : fieldmap)
 	{
 		if(it.first == "AMP")
@@ -192,6 +265,24 @@ void SiglentFunctionGenerator::ParseBasicWaveform(const string& str, size_t i)
 			m_cachedFrequencyValid[i] = true;
 		}
 
+		if(it.first == "DUTY")
+		{
+			m_cachedDutyCycle[i] = stof(it.second) * 1e-2;
+			m_cachedDutyCycleValid[i] = true;
+		}
+
+		if(it.first == "RISE")
+		{
+			m_cachedRiseTime[i] = sec.ParseString(it.second);
+			m_cachedRiseTimeValid[i] = true;
+		}
+
+		if(it.first == "FALL")
+		{
+			m_cachedFallTime[i] = sec.ParseString(it.second);
+			m_cachedFallTimeValid[i] = true;
+		}
+
 		if(it.first == "WVTP")
 		{
 			if(it.second == "SINE")
@@ -202,6 +293,11 @@ void SiglentFunctionGenerator::ParseBasicWaveform(const string& str, size_t i)
 			else if(it.second == "SQUARE")
 			{
 				m_cachedWaveShape[i] = SHAPE_SQUARE;
+				m_cachedWaveShapeValid[i] = true;
+			}
+			else if(it.second == "RAMP")
+			{
+				m_cachedWaveShape[i] = SHAPE_SAWTOOTH_UP;
 				m_cachedWaveShapeValid[i] = true;
 			}
 			else if(it.second == "PULSE")
@@ -217,6 +313,21 @@ void SiglentFunctionGenerator::ParseBasicWaveform(const string& str, size_t i)
 			else if(it.second == "DC")
 			{
 				m_cachedWaveShape[i] = SHAPE_DC;
+				m_cachedWaveShapeValid[i] = true;
+			}
+			else if(it.second == "PRBS")
+			{
+				m_cachedWaveShape[i] = SHAPE_PRBS_NONSTANDARD;
+				m_cachedWaveShapeValid[i] = true;
+			}
+			else if(it.second == "ARB")
+			{
+				m_cachedWaveShape[i] = SHAPE_ARB;
+				m_cachedWaveShapeValid[i] = true;
+			}
+			else if(it.second == "IQ")
+			{
+				m_cachedWaveShape[i] = SHAPE_ARB;
 				m_cachedWaveShapeValid[i] = true;
 			}
 			else
@@ -235,36 +346,12 @@ vector<FunctionGenerator::WaveShape> SiglentFunctionGenerator::GetAvailableWavef
 	vector<WaveShape> ret;
 	ret.push_back(SHAPE_SINE);
 	ret.push_back(SHAPE_SQUARE);
-	//ret.push_back(SHAPE_SAWTOOTH_UP);
+	ret.push_back(SHAPE_SAWTOOTH_UP);
 	ret.push_back(SHAPE_PULSE);
 	ret.push_back(SHAPE_NOISE);
 	ret.push_back(SHAPE_DC);
-	/*ret.push_back(SHAPE_HALF_SINE);
-	ret.push_back(SHAPE_GAUSSIAN_PULSE);
-	ret.push_back(SHAPE_SAWTOOTH_DOWN);
-	ret.push_back(SHAPE_NEGATIVE_PULSE);
-	ret.push_back(SHAPE_STAIRCASE_DOWN);
-	ret.push_back(SHAPE_STAIRCASE_UP_DOWN);
-	ret.push_back(SHAPE_STAIRCASE_UP);
-	ret.push_back(SHAPE_CARDIAC);
-	ret.push_back(SHAPE_CUBIC);
-	ret.push_back(SHAPE_EXPONENTIAL_DECAY);
-	ret.push_back(SHAPE_EXPONENTIAL_RISE);
-	ret.push_back(SHAPE_GAUSSIAN);
-	ret.push_back(SHAPE_HAVERSINE);
-	ret.push_back(SHAPE_LOG_RISE);
-	ret.push_back(SHAPE_COT);
-	ret.push_back(SHAPE_SINC);
-	ret.push_back(SHAPE_SQUARE_ROOT);
-	ret.push_back(SHAPE_TAN);
-	ret.push_back(SHAPE_ACOS);
-	ret.push_back(SHAPE_ASIN);
-	ret.push_back(SHAPE_ATAN);
-	ret.push_back(SHAPE_BARTLETT);
-	ret.push_back(SHAPE_HAMMING);
-	ret.push_back(SHAPE_HANNING);
-	ret.push_back(SHAPE_TRIANGLE);*/
-	//TODO: PRBS? only in some models
+	ret.push_back(SHAPE_PRBS_NONSTANDARD);
+	ret.push_back(SHAPE_ARB);
 	return ret;
 }
 
@@ -288,6 +375,33 @@ void SiglentFunctionGenerator::SetFunctionChannelActive(int chan, bool on)
 
 	m_cachedOutputEnable[chan] = on;
 	m_cachedEnableStateValid[chan] = true;
+}
+
+bool SiglentFunctionGenerator::HasFunctionDutyCycleControls(int /*chan*/)
+{
+	return true;
+}
+
+float SiglentFunctionGenerator::GetFunctionChannelDutyCycle(int chan)
+{
+	if(m_cachedDutyCycleValid[chan])
+		return m_cachedDutyCycle[chan];
+
+	//Fetch BSWV which also populates DUTY
+	auto reply = RemoveHeader(m_transport->SendCommandQueuedWithReply(m_channels[chan]->GetHwname() + ":BSWV?"));
+	ParseBasicWaveform(reply, chan);
+
+	return m_cachedDutyCycle[chan];
+}
+
+void SiglentFunctionGenerator::SetFunctionChannelDutyCycle(int chan, float duty)
+{
+	int percent = round(100 * duty);
+	percent = max(0, min(100, percent));
+	m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV DUTY," + to_string(percent));
+
+	m_cachedDutyCycle[chan] = duty;
+	m_cachedDutyCycleValid[chan] = true;
 }
 
 float SiglentFunctionGenerator::GetFunctionChannelAmplitude(int chan)
@@ -379,12 +493,9 @@ void SiglentFunctionGenerator::SetFunctionChannelShape(int chan, WaveShape shape
 			m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV WVTP,SQUARE");
 			break;
 
-		//TODO: RAMP is sawtooth but you have to change symmetry
-		/*
 		case SHAPE_SAWTOOTH_UP:
 			m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV WVTP,RAMP");
 			break;
-			*/
 
 		case SHAPE_PULSE:
 			m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV WVTP,PULSE");
@@ -398,108 +509,10 @@ void SiglentFunctionGenerator::SetFunctionChannelShape(int chan, WaveShape shape
 			m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV WVTP,DC");
 			break;
 
-		//for anything else, it's an ARB
-	/*
-		case SHAPE_HALF_SINE:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP ABSSINE");
+		case SHAPE_PRBS_NONSTANDARD:
+			m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV WVTP,PRBS");
 			break;
 
-		case SHAPE_GAUSSIAN_PULSE:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP GAUSSPULSE");
-			break;
-
-		case SHAPE_SAWTOOTH_DOWN:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP NEGRAMP");
-			break;
-
-		case SHAPE_NEGATIVE_PULSE:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP NPULSE");
-			break;
-
-		case SHAPE_STAIRCASE_DOWN:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP STAIRDN");
-			break;
-
-		case SHAPE_STAIRCASE_UP_DOWN:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP STAIRUD");
-			break;
-
-		case SHAPE_STAIRCASE_UP:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP STAIRUP");
-			break;
-
-		case SHAPE_CARDIAC:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP CARDIAC");
-			break;
-
-		case SHAPE_CUBIC:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP CUBIC");
-			break;
-
-		case SHAPE_EXPONENTIAL_DECAY:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP EXPFALL");
-			break;
-
-		case SHAPE_EXPONENTIAL_RISE:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP EXPRISE");
-			break;
-
-		case SHAPE_GAUSSIAN:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP GAUSS");
-			break;
-
-		case SHAPE_HAVERSINE:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP HAVERSINE");
-			break;
-
-		case SHAPE_LOG_RISE:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP LOG");
-			break;
-
-		case SHAPE_COT:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP COT");
-			break;
-
-		case SHAPE_SINC:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP SINC");
-			break;
-
-		case SHAPE_SQUARE_ROOT:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP SQRT");
-			break;
-
-		case SHAPE_TAN:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP TAN");
-			break;
-
-		case SHAPE_ACOS:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP ACOS");
-			break;
-
-		case SHAPE_ASIN:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP ASIN");
-			break;
-
-		case SHAPE_ATAN:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP ATAN");
-			break;
-
-		case SHAPE_BARTLETT:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP BARTLETT");
-			break;
-
-		case SHAPE_HAMMING:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP HAMMING");
-			break;
-
-		case SHAPE_HANNING:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP HANNING");
-			break;
-
-		case SHAPE_TRIANGLE:
-			m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SHAP TRIANG");
-			break;
-		*/
 		default:
 			LogWarning("[SiglentFunctionGenerator::SetFunctionChannelShape] unrecognized shape %d", shape);
 
@@ -508,30 +521,57 @@ void SiglentFunctionGenerator::SetFunctionChannelShape(int chan, WaveShape shape
 	}
 }
 
-float SiglentFunctionGenerator::GetFunctionChannelDutyCycle(int chan)
+bool SiglentFunctionGenerator::HasFunctionRiseFallTimeControls(int chan)
 {
-	/*
-	auto reply = Trim(m_transport->SendCommandQueuedWithReply(string("SOUR") + to_string(chan+1) + ":FUNC:SQU:DCYC?"));
-	return stof(reply) * 1e-2;
-	*/
-	return 0;
+	//Rise/fall time is only valid for PULSE waveform
+	return (GetFunctionChannelShape(chan) == SHAPE_PULSE);
 }
 
-void SiglentFunctionGenerator::SetFunctionChannelDutyCycle(int chan, float duty)
+float SiglentFunctionGenerator::GetFunctionChannelRiseTime(int chan)
 {
-	/*
-	//TODO: implement caps on duty cycle per manual
-	//20-80% from DC to 10 MHz
-	//40-60% from 10-40 MHz
-	//fixed 50% past 40 MHz
-	int percent = round(100 * duty);
-	m_transport->SendCommandQueued(string("SOUR") + to_string(chan+1) + ":FUNC:SQU:DCYC " + to_string(percent));
-	*/
+	if(m_cachedRiseTimeValid[chan])
+		return m_cachedRiseTime[chan];
+
+	auto reply = RemoveHeader(m_transport->SendCommandQueuedWithReply(m_channels[chan]->GetHwname() + ":BSWV?"));
+	ParseBasicWaveform(reply, chan);
+
+	return m_cachedRiseTime[chan];
 }
 
-bool SiglentFunctionGenerator::HasFunctionRiseFallTimeControls(int /*chan*/)
+void SiglentFunctionGenerator::SetFunctionChannelRiseTime(int chan, float fs)
 {
-	return false;
+	//Convert fs to seconds
+	float sec = fs * 1e-15f;
+	m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV RISE," + to_string(sec));
+
+	m_cachedRiseTime[chan] = fs;
+	m_cachedRiseTimeValid[chan] = true;
+}
+
+float SiglentFunctionGenerator::GetFunctionChannelFallTime(int chan)
+{
+	if(m_cachedFallTimeValid[chan])
+		return m_cachedFallTime[chan];
+
+	auto reply = RemoveHeader(m_transport->SendCommandQueuedWithReply(m_channels[chan]->GetHwname() + ":BSWV?"));
+	ParseBasicWaveform(reply, chan);
+
+	return m_cachedFallTime[chan];
+}
+
+void SiglentFunctionGenerator::SetFunctionChannelFallTime(int chan, float fs)
+{
+	//Convert fs to seconds
+	float sec = fs * 1e-15f;
+	m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV FALL," + to_string(sec));
+
+	m_cachedFallTime[chan] = fs;
+	m_cachedFallTimeValid[chan] = true;
+}
+
+bool SiglentFunctionGenerator::HasFunctionImpedanceControls(int /*chan*/)
+{
+	return true;
 }
 
 FunctionGenerator::OutputImpedance SiglentFunctionGenerator::GetFunctionChannelOutputImpedance(int chan)
@@ -554,4 +594,9 @@ void SiglentFunctionGenerator::SetFunctionChannelOutputImpedance(int chan, Funct
 
 	m_cachedImpedance[chan] = z;
 	m_cachedImpedanceValid[chan] = true;
+
+	//Impedance is shared across both channels on SDG series
+	size_t other = (chan == 0) ? 1 : 0;
+	m_cachedImpedance[other] = z;
+	m_cachedImpedanceValid[other] = true;
 }

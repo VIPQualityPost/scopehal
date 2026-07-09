@@ -221,6 +221,18 @@ public:
 	 */
 	virtual std::string GetProtocolDisplayName() =0;
 
+	/**
+		@brief Returns true if this filter requires user configuration before use
+
+		The default implementation returns true if the filter has any parameters.
+		Filters that don't need configuration (no parameters or fully auto-configuring)
+		should return false.
+	 */
+	virtual bool NeedsConfig()
+	{
+		return (GetParamCount() > 0);
+	}
+
 public:
 	/**
 		@brief Clears any integrated data from past triggers (e.g. eye patterns).
