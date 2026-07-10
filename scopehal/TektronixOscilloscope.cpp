@@ -105,7 +105,11 @@ TektronixOscilloscope::TektronixOscilloscope(SCPITransport* transport)
 		m_family = FAMILY_UNKNOWN;
 
 	//Last digit of the model number is the number of channels
+	//Strip any trailing bandwidth option suffix (e.g. "MDO4054B-3" -> "MDO4054B")
 	string model_number = m_model;
+	auto dashpos = model_number.find('-');
+	if(dashpos != string::npos)
+		model_number = model_number.substr(0, dashpos);
 	model_number.erase(
 		std::remove_if(
 			model_number.begin(),

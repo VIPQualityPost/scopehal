@@ -747,10 +747,21 @@ bool TektronixMDO4000BOscilloscope::AcquireData()
 			{
 				auto it = pending_waveforms.find(j);
 				if((it != pending_waveforms.end()) && (seg < it->second.size()))
-					s[GetOscilloscopeChannel(j)] = pending_waveforms[j][seg];
+				{
+					auto wf = pending_waveforms[j][seg];
+					bool isDigital = GetOscilloscopeChannel(j)->GetType(0) == Stream::STREAM_TYPE_DIGITAL;
+					LogDebug("Save: ch%zu (%s) wf=%p %s size=%zu\n",
+						j, GetOscilloscopeChannel(j)->GetHwname().c_str(),
+						(void*)wf, isDigital ? "DIGITAL" : "ANALOG",
+						wf ? wf->size() : 0U);
+					s[GetOscilloscopeChannel(j)] = wf;
+				}
+				else
+					LogDebug("Save: ch%zu enabled but no pending waveform\n", j);
 			}
 		}
 		m_pendingWaveforms.push_back(s);
+		LogDebug("Save: SequenceSet has %zu entries\n", s.size());
 	}
 	m_pendingWaveformsMutex.unlock();
 
@@ -884,14 +895,19 @@ bool TektronixMDO4000BOscilloscope::AcquireDigitalData(
 		}
 	}
 	if(!anyEnabled)
+	{
+		LogDebug("MDO4000B: no digital channels enabled, skipping\n");
 		return true;
+	}
+
+	LogDebug("MDO4000B: acquiring digital data (%zu channels)\n", m_digitalChannelCountMDO);
 
 	bool succeeded = false;
 	for(int retry = 0; retry < 3; retry++)
 	{
 		m_transport->SendCommandImmediate("DAT:SOU DIG");
 		m_transport->SendCommandImmediate("DAT:WID 4");
-		m_transport->SendCommandImmediate("DAT:ENC SRI");
+		m_transport->SendCommandImmediate("DAT:ENC RIB");
 
 		string preamble_str = m_transport->SendCommandImmediateWithReply("WFMO?", false);
 		mdo4k_preamble preamble;
@@ -904,7 +920,7 @@ bool TektronixMDO4000BOscilloscope::AcquireDigitalData(
 		size_t timebase = (size_t)(preamble.xincrement * (double)FS_PER_SECOND);
 
 		size_t msglen;
-		char* samples = (char*)m_transport->SendCommandImmediateWithRawBlockReply("CURV?", msglen);
+		uint8_t* samples = (uint8_t*)m_transport->SendCommandImmediateWithRawBlockReply("CURV?", msglen);
 		if(samples == NULL)
 		{
 			LogWarning("MDO4000B: Didn't get digital samples\n");
@@ -925,8 +941,14 @@ bool TektronixMDO4000BOscilloscope::AcquireDigitalData(
 			cap->Reserve(nsamples);
 			cap->PrepareForCpuAccess();
 
-			int mask = (1 << j);
-			bool last = (samples[0] & mask) ? true : false;
+			uint32_t mask = (1U << j);
+			//Data is big-endian (DAT:ENC RIB)
+			uint32_t word =
+				(static_cast<uint32_t>(samples[0]) << 24) |
+				(static_cast<uint32_t>(samples[1]) << 16) |
+				(static_cast<uint32_t>(samples[2]) << 8) |
+				static_cast<uint32_t>(samples[3]);
+			bool last = (word & mask) ? true : false;
 
 			cap->m_offsets.push_back(0);
 			cap->m_durations.push_back(1);
@@ -934,8 +956,15 @@ bool TektronixMDO4000BOscilloscope::AcquireDigitalData(
 
 			for(size_t m = 1; m < nsamples; m++)
 			{
-				bool sample = (samples[m * 4] & mask) ? true : false;
-				if(last == sample)
+				word =
+					(static_cast<uint32_t>(samples[m * 4]) << 24) |
+					(static_cast<uint32_t>(samples[m * 4 + 1]) << 16) |
+					(static_cast<uint32_t>(samples[m * 4 + 2]) << 8) |
+					static_cast<uint32_t>(samples[m * 4 + 3]);
+				bool sample = (word & mask) ? true : false;
+				//Deduplicate only in the middle of the waveform;
+				//always emit segments near edges to work around flat-signal rendering
+				if( (last == sample) && ((m + 5) < nsamples) && (m > 5) )
 					cap->m_durations[cap->m_samples.size() - 1]++;
 				else
 				{
@@ -948,6 +977,9 @@ bool TektronixMDO4000BOscilloscope::AcquireDigitalData(
 
 			cap->MarkSamplesModifiedFromCpu();
 			cap->MarkTimestampsModifiedFromCpu();
+			LogDebug("  D%zu: wf=%p segments=%zu dur0=%lld\n",
+				j, (void*)cap, cap->size(),
+				(long long)(cap->size() > 0 ? cap->m_durations[0] : 0LL));
 			pending_waveforms[m_digitalChannelBaseMDO + j].push_back(cap);
 		}
 
@@ -1175,15 +1207,22 @@ void TektronixMDO4000BOscilloscope::SetSampleDepth(uint64_t depth)
 	lock_guard<recursive_mutex> lock(m_cacheMutex);
 	m_sampleDepth = depth;
 	m_sampleDepthValid = true;
+	m_sampleRateValid = false;	//Changing depth affects sample rate
 
 	m_transport->SendCommandQueued(string("HOR:RECO ") + to_string(depth));
 	m_transport->SendCommandQueued("DAT:START 1");
 	m_transport->SendCommandQueued(string("DAT:STOP ") + to_string(depth));
 }
 
-void TektronixMDO4000BOscilloscope::SetSampleRate(uint64_t /*rate*/)
+void TektronixMDO4000BOscilloscope::SetSampleRate(uint64_t rate)
 {
-	//MDO uses HOR:SCAle to set timebase, not direct sample rate
+	//Set the horizontal scale to achieve the requested sample rate
+	double depth = GetSampleDepth();
+	double scale_sec = depth / (static_cast<double>(rate) * 10.0);
+	lock_guard<recursive_mutex> lock(m_cacheMutex);
+	m_transport->SendCommandQueued(string("HOR:SCALE ") + to_string_sci(scale_sec));
+	m_sampleRateValid = false;
+	m_sampleDepthValid = false;
 }
 
 void TektronixMDO4000BOscilloscope::SetTriggerOffset(int64_t offset)
@@ -1568,37 +1607,8 @@ bool TektronixMDO4000BOscilloscope::HasInterleavingControls()
 
 vector<uint64_t> TektronixMDO4000BOscilloscope::GetSampleRatesNonInterleaved()
 {
-	vector<uint64_t> ret;
-	const int64_t k = 1000;
-	const int64_t m = k * k;
-
-	uint64_t bases[] = { 1000, 1250, 2500, 3125, 5000, 6250 };
-	vector<uint64_t> scales = {1, 10, 100, 1*k};
-
-	for(auto b : bases)
-		ret.push_back(b / 10);
-
-	for(auto scale : scales)
-	{
-		for(auto b : bases)
-			ret.push_back(b * scale);
-	}
-
-	ret.push_back(12500 * k);
-	ret.push_back(25 * m);
-	ret.push_back(31250 * k);
-	ret.push_back(62500 * k);
-	ret.push_back(125 * m);
-	ret.push_back(250 * m);
-	ret.push_back(312500 * k);
-	ret.push_back(625 * m);
-	ret.push_back(1250 * m);
-	ret.push_back(1562500 * k);
-	ret.push_back(3125 * m);
-	ret.push_back(6250 * m);
-	ret.push_back(12500 * m);
-
-	return ret;
+	//HOR:SAMPLER? is query-only on MDO4000B; sample rate is auto-determined by time/div
+	return {GetSampleRate()};
 }
 
 vector<uint64_t> TektronixMDO4000BOscilloscope::GetSampleRatesInterleaved()
