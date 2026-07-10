@@ -44,7 +44,13 @@ DPAuxChannelDecoder::DPAuxChannelDecoder(const string& color)
 	, m_dfpType(DFP_TYPE_UNKNOWN)
 	, m_dcpdRevision(0x11)
 {
-	CreateInput<InputConstraintStreamType>("aux", Stream::STREAM_TYPE_ANALOG);
+	CreateInput<InputConstraintStreamTypes>(
+		"aux",
+		initializer_list<Stream::StreamType>
+		{
+			Stream::STREAM_TYPE_ANALOG,
+			Stream::STREAM_TYPE_DIGITAL
+		});
 
 	//Rename default output stream since we have several
 	m_streams[0].m_name = "dpaux";
@@ -83,25 +89,29 @@ void DPAuxChannelDecoder::Refresh(
 	[[maybe_unused]] shared_ptr<QueueHandle> queue)
 {
 	#ifdef HAVE_NVTX
-		nvtx3::scoped_range nrange("ACCoupleFilter::Refresh");
+		nvtx3::scoped_range nrange("DPAuxChannelDecoder::Refresh");
 	#endif
 
 	ClearPackets();
 	ClearErrors();
 
+	auto din = GetInputWaveform(0);
+	auto udin = dynamic_cast<UniformWaveformBase*>(din);
+	auto adin = dynamic_cast<UniformAnalogWaveform*>(din);
+	auto ddin = dynamic_cast<UniformDigitalWaveform*>(din);
+
 	//Get the input data
-	if(!VerifyAllInputsOKAndUniformAnalog())
+	if(!adin && !ddin)
 	{
 		if(!GetInput(0))
 			AddErrorMessage("Missing inputs", "No signal input connected");
-		else if(!GetInputWaveform(0))
+		else
 			AddErrorMessage("Missing inputs", "No waveform available at input");
 
 		SetData(nullptr, 0);
 		return;
 	}
 
-	auto din = dynamic_cast<UniformAnalogWaveform*>(GetInputWaveform(0));
 	size_t len = din->size();
 	din->PrepareForCpuAccess();
 
@@ -141,7 +151,7 @@ void DPAuxChannelDecoder::Refresh(
 			break;
 
 		//Look for a falling edge (falling edge of the first preamble bit)
-		if(!FindFallingEdge(i, din))
+		if(!FindFallingEdge(i, adin, ddin))
 		{
 			LogTrace("Capture ended before finding another preamble\n");
 			break;
@@ -170,25 +180,33 @@ void DPAuxChannelDecoder::Refresh(
 			FRAME_END_2
 		} frame_state = FRAME_PREAMBLE_0;
 
+		//Append the previous packet, if it had any data
+		if(pack && !pack->m_headers.empty())
+		{
+			m_packets.push_back(pack);
+			pack = nullptr;
+		}
+		if(!pack)
+			pack = new Packet;
+
 		//Recover the Manchester bitstream
 		bool current_state = false;
-		int64_t ui_start = GetOffsetScaled(din, i);
+		int64_t ui_start = GetOffsetScaled(udin, i);
 		int64_t symbol_start = i;
 		int64_t last_edge = i;
 		int64_t last_edge2 = i;
 		uint32_t addr_hi = 0;
 		LogTrace("[T = %s] Found initial falling edge\n", Unit(Unit::UNIT_FS).PrettyPrint(ui_start).c_str());
-		pack = new Packet;
-		m_packets.push_back(pack);
 		pack->m_offset = ui_start;
 		pack->m_len = 0;
 		char tmp[32];
+
 		while(i < len)
 		{
 			//When we get here, i points to the start of our UI
 			//Expect an opposite polarity edge at the center of our bit
 			//LogDebug("Looking for %d -> %d edge\n", current_state, !current_state);
-			if(!FindEdge(i, din, !current_state))
+			if(!FindEdge(i, adin, ddin, !current_state))
 			{
 				LogTrace("Capture ended while looking for middle of this bit\n");
 				done = true;
@@ -197,7 +215,7 @@ void DPAuxChannelDecoder::Refresh(
 
 			//If the edge came too soon or too late, possible sync error - restart from this edge
 			//If the delta was more than ten UIs, it's a new frame - end this one
-			int64_t edgepos = GetOffsetScaled(din, i);
+			int64_t edgepos = GetOffsetScaled(udin, i);
 			int64_t delta = edgepos - ui_start;
 			if(delta > 10 * ui_width)
 			{
@@ -205,6 +223,7 @@ void DPAuxChannelDecoder::Refresh(
 				i++;
 				break;
 			}
+
 			if( (delta < eye_start) || (delta > eye_end) )
 			{
 				//Special action for sync patterns
@@ -282,7 +301,7 @@ void DPAuxChannelDecoder::Refresh(
 					}
 				}
 
-				ui_start = GetOffsetScaled(din, i);
+				ui_start = GetOffsetScaled(udin, i);
 				i++;
 				current_state = !current_state;
 
@@ -336,7 +355,7 @@ void DPAuxChannelDecoder::Refresh(
 				continue;
 			}
 			int64_t i_middle = i;
-			int64_t ui_middle = GetOffsetScaled(din, i);
+			int64_t ui_middle = GetOffsetScaled(udin, i);
 
 			//Edge is in the right spot! Decode it.
 			//NOTE: Manchester polarity and bit ordering are inverted from Ethernet
@@ -595,13 +614,13 @@ void DPAuxChannelDecoder::Refresh(
 			}
 
 			//See if we have an edge at the end of this bit period
-			if(!FindEdge(i, din, current_state))
+			if(!FindEdge(i, adin, ddin, current_state))
 			{
 				LogTrace("Capture ended while looking for end of this bit\n");
 				done = true;
 				break;
 			}
-			edgepos = GetOffsetScaled(din, i);
+			edgepos = GetOffsetScaled(udin, i);
 			delta = edgepos - ui_middle;
 
 			//Next edge is way after the end of this bit.
@@ -616,7 +635,7 @@ void DPAuxChannelDecoder::Refresh(
 				int64_t target = ui_middle + ui_halfwidth;
 				while(i < len)
 				{
-					int64_t pos = GetOffsetScaled(din, i);
+					int64_t pos = GetOffsetScaled(udin, i);
 					if(pos >= target)
 						break;
 					else
@@ -640,11 +659,17 @@ void DPAuxChannelDecoder::Refresh(
 			}
 
 			//Either way, i now points to the beginning of the next bit's UI
-			ui_start = GetOffsetScaled(din, i);
+			ui_start = GetOffsetScaled(udin, i);
 			last_edge2 = last_edge;
 			last_edge = i;
 		}
 	}
+
+	//Append the final packet
+	if(!pack->m_headers.empty())
+		m_packets.push_back(pack);
+	else
+		delete pack;
 
 	cap->MarkModifiedFromCpu();
 	i2ccap->MarkModifiedFromCpu();
@@ -2045,6 +2070,40 @@ bool DPAuxChannelDecoder::FindRisingEdge(size_t& i, UniformAnalogWaveform* cap)
 	while(j < len)
 	{
 		if(cap->m_samples[j] > 0.125)
+		{
+			i = j;
+			return true;
+		}
+		j++;
+	}
+
+	return false;	//not found
+}
+
+bool DPAuxChannelDecoder::FindFallingEdge(size_t& i, UniformDigitalWaveform* cap)
+{
+	size_t j = i;
+	size_t len = cap->m_samples.size();
+	while(j < len)
+	{
+		if(cap->m_samples[j] == false)
+		{
+			i = j;
+			return true;
+		}
+		j++;
+	}
+
+	return false;	//not found
+}
+
+bool DPAuxChannelDecoder::FindRisingEdge(size_t& i, UniformDigitalWaveform* cap)
+{
+	size_t j = i;
+	size_t len = cap->m_samples.size();
+	while(j < len)
+	{
+		if(cap->m_samples[j] == true)
 		{
 			i = j;
 			return true;
