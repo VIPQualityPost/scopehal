@@ -225,6 +225,7 @@ set(SCOPEHAL_SOURCES
 	SinilinkPowerSupply.cpp
 	KuaiquPowerSupply.cpp
 	KeysightEDU36311APowerSupply.cpp
+	KeysightE3644APowerSupply.cpp
 
 	StandardColors.cpp
 	Filter.cpp

@@ -92,6 +92,7 @@
 #include "SinilinkPowerSupply.h"
 #include "KuaiquPowerSupply.h"
 #include "KeysightEDU36311APowerSupply.h"
+#include "KeysightE3644APowerSupply.h"
 
 #include "SiglentLoad.h"
 #include "RigolDL3000Load.h"
@@ -362,6 +363,7 @@ void DriverStaticInit()
 	AddPowerSupplyDriverClass(SinilinkPowerSupply);
 	AddPowerSupplyDriverClass(KuaiquPowerSupply);
 	AddPowerSupplyDriverClass(KeysightEDU36311APowerSupply);
+	AddPowerSupplyDriverClass(KeysightE3644APowerSupply);
 
 	AddRFSignalGeneratorDriverClass(SiglentVectorSignalGenerator);
 
