@@ -391,5 +391,11 @@ double Keysight34461AMultimeter::GetSecondaryMeterValue()
 	if(comma != string::npos)
 		reply = reply.substr(0, comma);
 
-	return stod(reply);
+	double val = stod(reply);
+
+	//Check for overload sentinel (+9.9E37 range)
+	if(val > 9.0e36)
+		return std::numeric_limits<double>::max();
+
+	return val;
 }
