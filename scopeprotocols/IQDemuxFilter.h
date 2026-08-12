@@ -38,7 +38,7 @@
 class IQDemuxConstants
 {
 public:
-	uint32_t istart;
+	uint32_t useBaseT1Alignment;
 	uint32_t outlen;
 };
 
@@ -48,6 +48,7 @@ public:
 	IQDemuxFilter(const std::string& color);
 
 	virtual void Refresh(vk::raii::CommandBuffer& cmdBuf, std::shared_ptr<QueueHandle> queue) override;
+	virtual uint32_t GetExecutionCapabilitiesMask() override;
 
 	static std::string GetProtocolName();
 
@@ -60,6 +61,8 @@ public:
 	PROTOCOL_DECODER_INITPROC(IQDemuxFilter)
 
 protected:
+	void DispatchAlign(vk::raii::CommandBuffer& cmdBuf, SparseAnalogWaveform* din, size_t len);
+
 	FilterParameter& m_alignment;
 
 	std::shared_ptr<ComputePipeline> m_demuxComputePipeline;

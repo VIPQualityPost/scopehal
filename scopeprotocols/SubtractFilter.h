@@ -52,13 +52,14 @@ public:
 	~SubtractFilter();
 
 	virtual void Refresh(vk::raii::CommandBuffer& cmdBuf, std::shared_ptr<QueueHandle> queue) override;
+	virtual uint32_t GetExecutionCapabilitiesMask() override;
 
 	static std::string GetProtocolName();
 
 	PROTOCOL_DECODER_INITPROC(SubtractFilter)
 
 protected:
-	void DoRefreshVectorVector(vk::raii::CommandBuffer& cmdBuf, std::shared_ptr<QueueHandle> queue);
+	void DoRefreshVectorVector(vk::raii::CommandBuffer& cmdBuf);
 	void DoRefreshScalarScalar();
 	void DoRefreshScalarVector(size_t iScalar, size_t iVector);
 

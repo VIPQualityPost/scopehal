@@ -69,13 +69,21 @@ string EmphasisFilter::GetProtocolName()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Actual decoder logic
 
-void EmphasisFilter::Refresh(vk::raii::CommandBuffer& cmdBuf, shared_ptr<QueueHandle> queue)
+uint32_t EmphasisFilter::GetExecutionCapabilitiesMask()
+{
+ 	return
+		(uint32_t)ExecutionCapabilities::CommandBufferAppend |
+		(uint32_t)ExecutionCapabilities::CommandBufferTailCall |
+		(uint32_t)ExecutionCapabilities::VulkanOnly;
+}
+
+void EmphasisFilter::Refresh(vk::raii::CommandBuffer& cmdBuf, [[maybe_unused]] shared_ptr<QueueHandle> queue)
 {
 	#ifdef HAVE_NVTX
 		nvtx3::scoped_range nrange("EmphasisFilter::Refresh");
 	#endif
 
-	ClearErrors();
+	ClearMessages();
 	if(!VerifyAllInputsOKAndUniformAnalog())
 	{
 		if(!GetInput(0))
@@ -134,18 +142,16 @@ void EmphasisFilter::Refresh(vk::raii::CommandBuffer& cmdBuf, shared_ptr<QueueHa
 	cfg.tap0 = taps[0];
 	cfg.tap1 = taps[1];
 
-	cmdBuf.begin({});
+	{
+		NamedDebugRange debugRange(cmdBuf, "EmphasisFilter");
 
-	m_computePipeline.BindBufferNonblocking(0, din->m_samples, cmdBuf);
-	m_computePipeline.BindBufferNonblocking(1, cap->m_samples, cmdBuf, true);
+		m_computePipeline.BindBufferNonblocking(0, din->m_samples, cmdBuf);
+		m_computePipeline.BindBufferNonblocking(1, cap->m_samples, cmdBuf, true);
 
-	const uint32_t compute_block_count = GetComputeBlockCount(outlen, 64);
-	m_computePipeline.Dispatch(cmdBuf, cfg,
-		min(compute_block_count, 32768u),
-		compute_block_count / 32768 + 1);
-
-	cmdBuf.end();
-	queue->SubmitAndBlock(cmdBuf);
-
+		const uint32_t compute_block_count = GetComputeBlockCount(outlen, 64);
+		m_computePipeline.Dispatch(cmdBuf, cfg,
+			min(compute_block_count, 32768u),
+			compute_block_count / 32768 + 1);
+	}
 	cap->m_samples.MarkModifiedFromGpu();
 }

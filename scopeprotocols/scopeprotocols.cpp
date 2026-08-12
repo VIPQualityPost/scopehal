@@ -83,6 +83,7 @@ void ScopeProtocolStaticInit()
 	AddDecoderClass(DownconvertFilter);
 	AddDecoderClass(DownsampleFilter);
 	AddDecoderClass(DPAuxChannelDecoder);
+	AddDecoderClass(DisplayPortMainLinkDecoder);
 	AddDecoderClass(DPhyDataDecoder);
 	AddDecoderClass(DPhyEscapeModeDecoder);
 	AddDecoderClass(DPhyHSClockRecoveryFilter);
@@ -107,7 +108,7 @@ void ScopeProtocolStaticInit()
 	AddDecoderClass(Ethernet10GBaseRDecoder);
 	AddDecoderClass(Ethernet64b66bDecoder);
 	//AddDecoderClass(EthernetGMIIDecoder);
-	//AddDecoderClass(EthernetRGMIIDecoder);
+	AddDecoderClass(EthernetRGMIIDecoder);
 	AddDecoderClass(EthernetRMIIDecoder);
 	AddDecoderClass(EthernetSGMIIDecoder);
 	AddDecoderClass(EthernetAutonegotiationDecoder);
@@ -164,7 +165,7 @@ void ScopeProtocolStaticInit()
 	AddDecoderClass(OvershootMeasurement);
 	AddDecoderClass(PAM4DemodulatorFilter);
 	AddDecoderClass(PAMEdgeDetectorFilter);
-	//AddDecoderClass(ParallelBus);
+	AddDecoderClass(ParallelBus);
 	AddDecoderClass(PcapngExportFilter);
 	AddDecoderClass(PcapngImportFilter);
 	AddDecoderClass(PCIe128b130bDecoder);

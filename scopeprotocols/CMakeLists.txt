@@ -41,6 +41,7 @@ set(SCOPEPROTOCOLS_SOURCES
 	DivideFilter.cpp
 	DownconvertFilter.cpp
 	DownsampleFilter.cpp
+	DisplayPortMainLinkDecoder.cpp
 	DPAuxChannelDecoder.cpp
 	DPhyDataDecoder.cpp
 	DPhyEscapeModeDecoder.cpp
@@ -217,6 +218,7 @@ add_library(scopeprotocols SHARED
 
 target_link_libraries(scopeprotocols
 	scopehal
+	ZLIB::ZLIB
 	)
 
 target_include_directories(scopeprotocols

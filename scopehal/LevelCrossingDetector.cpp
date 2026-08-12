@@ -56,8 +56,8 @@ LevelCrossingDetector::LevelCrossingDetector()
 			sizeof(PreGatherPushConstants));
 
 		//we need this readable from the CPU to get the final index count
-		m_gatherIndexes.SetCpuAccessHint(AcceleratorBuffer<int64_t>::HINT_LIKELY);
-		m_gatherIndexes.SetGpuAccessHint(AcceleratorBuffer<int64_t>::HINT_LIKELY);
+		m_gatherIndexes.SetCpuAccessHint(AcceleratorBuffer<uint32_t>::HINT_LIKELY);
+		m_gatherIndexes.SetGpuAccessHint(AcceleratorBuffer<uint32_t>::HINT_LIKELY);
 
 		m_gatherPipeline = make_unique<ComputePipeline>(
 			"shaders/Gather.spv",
@@ -82,6 +82,10 @@ int64_t LevelCrossingDetector::FindZeroCrossings(
 	vk::raii::CommandBuffer& cmdBuf,
 	shared_ptr<QueueHandle> queue)
 {
+	#ifdef HAVE_NVTX
+		nvtx3::scoped_range range("LevelCrossingDetector::FindZeroCrossings");
+	#endif
+
 	//Fallback in case GPU has no int64 support
 	if(!g_hasShaderInt64)
 	{
@@ -94,61 +98,86 @@ int64_t LevelCrossingDetector::FindZeroCrossings(
 		return len;
 	}
 
-	//This value experimentally gives the best speedup for an NVIDIA 2080 Ti vs an Intel Xeon Gold 6144
+	//This value experimentally gives the best speedup for NVIDIA 3070 TI and AMD R9700 AI Top vs Xeon 8362
 	//Maybe consider dynamic tuning in the future at initialization?
-	const uint64_t numThreads = 8192;
+	const uint64_t numThreads = 1024;
 
 	cmdBuf.begin({});
+	{
+		NamedDebugRange debugRange(cmdBuf, "LevelCrossingDetector::FindZeroCrossings");
 
-	//First shader pass: find edges and produce a sparse list
-	size_t depth = wfm->size();
-	ZeroCrossingPushConstants zpush;
-	zpush.triggerPhase = wfm->m_triggerPhase;
-	zpush.timescale = wfm->m_timescale;
-	zpush.inputSize = depth;
-	zpush.inputPerThread = (zpush.inputSize + numThreads) / numThreads;
-	zpush.outputPerThread = zpush.inputPerThread + 1;
-	zpush.threshold = threshold;
-	m_temporaryResults.resize(zpush.outputPerThread * numThreads);
+		size_t depth = wfm->size();
+		ZeroCrossingPushConstants zpush;
+		zpush.triggerPhase = wfm->m_triggerPhase;
+		zpush.timescale = wfm->m_timescale;
+		zpush.ftimescale = wfm->m_timescale;
+		zpush.inputSize = depth;
+		zpush.inputPerThread = (zpush.inputSize + numThreads) / numThreads;
+		zpush.outputPerThread = zpush.inputPerThread + 1;
+		zpush.threshold = threshold;
 
-	m_zeroCrossingPipeline->BindBufferNonblocking(0, m_temporaryResults, cmdBuf, true);
-	m_zeroCrossingPipeline->BindBufferNonblocking(1, wfm->m_samples, cmdBuf);
-	const uint32_t compute_block_count = GetComputeBlockCount(numThreads, 64);
-	m_zeroCrossingPipeline->Dispatch(cmdBuf, zpush,
-		min(compute_block_count, 32768u),
-		compute_block_count / 32768 + 1);
+		//First shader pass: find edges and produce a sparse list
+		{
+			NamedDebugRange shaderRange(cmdBuf, "FindZeroCrossings");
 
-	m_temporaryResults.MarkModifiedFromGpu();
-	m_zeroCrossingPipeline->AddComputeMemoryBarrier(cmdBuf);
+			m_temporaryResults.resize(zpush.outputPerThread * numThreads);
 
-	//Second pass: find boundaries of each block to find where the output blocks start
-	//(the very last entry here is going to be the total number of edges we found)
-	PreGatherPushConstants ppush;
-	ppush.numBlocks = numThreads+1;
-	ppush.stride = zpush.outputPerThread;
-	m_gatherIndexes.resize(numThreads + 1);
+			m_zeroCrossingPipeline->BindBufferNonblocking(0, m_temporaryResults, cmdBuf, true);
+			m_zeroCrossingPipeline->BindBufferNonblocking(1, wfm->m_samples, cmdBuf);
+			const uint32_t firstStageThreadsPerBlock = 1;
+			const uint32_t compute_block_count = GetComputeBlockCount(numThreads, firstStageThreadsPerBlock);
+			m_zeroCrossingPipeline->Dispatch(cmdBuf, zpush,
+				1,
+				min(compute_block_count, 32768u),
+				compute_block_count / 32768 + 1);
 
-	m_preGatherPipeline->BindBufferNonblocking(0, m_gatherIndexes, cmdBuf, true);
-	m_preGatherPipeline->BindBufferNonblocking(1, m_temporaryResults, cmdBuf);
-	m_preGatherPipeline->Dispatch(cmdBuf, ppush, GetComputeBlockCount(numThreads+1, 64), 1);
+			m_temporaryResults.MarkModifiedFromGpu();
+			m_zeroCrossingPipeline->AddComputeMemoryBarrier(cmdBuf);
+		}
 
-	m_gatherIndexes.MarkModifiedFromGpu();
-	m_preGatherPipeline->AddComputeMemoryBarrier(cmdBuf);
+		//Second pass: find boundaries of each block to find where the output blocks start
+		//(the very last entry here is going to be the total number of edges we found)
+		{
+			NamedDebugRange shaderRange(cmdBuf, "PreGather");
 
-	//Third pass: final reduction
-	GatherPushConstants gpush;
-	gpush.numBlocks = numThreads;
-	gpush.stride = zpush.outputPerThread;
-	m_outbuf.resize(depth);
+			PreGatherPushConstants ppush;
+			ppush.numBlocks = numThreads+1;
+			ppush.stride = zpush.outputPerThread;
+			m_gatherIndexes.resize(numThreads + 1);
 
-	m_gatherPipeline->BindBufferNonblocking(0, m_outbuf, cmdBuf, true);
-	m_gatherPipeline->BindBufferNonblocking(1, m_temporaryResults, cmdBuf);
-	m_gatherPipeline->BindBufferNonblocking(2, m_gatherIndexes, cmdBuf);
-	m_gatherPipeline->Dispatch(cmdBuf, gpush, GetComputeBlockCount(numThreads, 64), 1);
+			m_preGatherPipeline->BindBufferNonblocking(0, m_gatherIndexes, cmdBuf, true);
+			m_preGatherPipeline->BindBufferNonblocking(1, m_temporaryResults, cmdBuf);
+			m_preGatherPipeline->Dispatch(cmdBuf, ppush, GetComputeBlockCount(numThreads+1, 64), 1);
 
-	m_outbuf.MarkModifiedFromGpu();
+			m_gatherIndexes.MarkModifiedFromGpu();
+			m_preGatherPipeline->AddComputeMemoryBarrier(cmdBuf);
+		}
 
-	m_gatherIndexes.PrepareForCpuAccessNonblocking(cmdBuf);
+		//Third pass: final reduction
+		{
+			NamedDebugRange shaderRange(cmdBuf, "Gather");
+
+			GatherPushConstants gpush;
+			gpush.numBlocks = numThreads;
+			gpush.stride = zpush.outputPerThread;
+			m_outbuf.resize(depth);
+
+			const size_t numGatherThreadsPerBlock = 1;
+			m_gatherPipeline->BindBufferNonblocking(0, m_outbuf, cmdBuf, true);
+			m_gatherPipeline->BindBufferNonblocking(1, m_temporaryResults, cmdBuf);
+			m_gatherPipeline->BindBufferNonblocking(2, m_gatherIndexes, cmdBuf);
+			m_gatherPipeline->Dispatch(cmdBuf, gpush, 1, GetComputeBlockCount(numThreads, numGatherThreadsPerBlock), 1);
+
+			m_outbuf.MarkModifiedFromGpu();
+			m_gatherIndexes.MarkModifiedFromGpu();
+		}
+
+		//Grab results
+		{
+			NamedDebugRange shaderRange(cmdBuf, "Collect results");
+			m_gatherIndexes.PrepareForCpuAccessNonblocking(cmdBuf);
+		}
+	}
 
 	cmdBuf.end();
 	queue->SubmitAndBlock(cmdBuf);
@@ -157,6 +186,7 @@ int64_t LevelCrossingDetector::FindZeroCrossings(
 	//m_gatherIndexes.PrepareForCpuAccess();
 	auto len = m_gatherIndexes[numThreads];
 	m_outbuf.resize(len);
+
 	return len;
 }
 
@@ -166,6 +196,8 @@ int64_t LevelCrossingDetector::FindZeroCrossings(
 	[[maybe_unused]] vk::raii::CommandBuffer& cmdBuf,
 	[[maybe_unused]] shared_ptr<QueueHandle> queue)
 {
+	wfm->PrepareForCpuAccess();
+
 	//TODO: GPU version
 	vector<int64_t> edges;
 	Filter::FindZeroCrossings(wfm, threshold, edges);
@@ -178,6 +210,8 @@ int64_t LevelCrossingDetector::FindZeroCrossings(
 	[[maybe_unused]] vk::raii::CommandBuffer& cmdBuf,
 	[[maybe_unused]] shared_ptr<QueueHandle> queue)
 {
+	wfm->PrepareForCpuAccess();
+
 	//TODO: GPU version
 	vector<int64_t> edges;
 	Filter::FindZeroCrossings(wfm, edges);
@@ -191,6 +225,8 @@ int64_t LevelCrossingDetector::FindZeroCrossings(
 	[[maybe_unused]] vk::raii::CommandBuffer& cmdBuf,
 	[[maybe_unused]] shared_ptr<QueueHandle> queue)
 {
+	wfm->PrepareForCpuAccess();
+
 	//TODO: GPU version
 	vector<int64_t> edges;
 	Filter::FindZeroCrossings(wfm, edges);

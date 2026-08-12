@@ -108,12 +108,6 @@ public:
 
 protected:
 
-	///@brief True if the trigger is armed
-	bool m_triggerArmed;
-
-	///@brief True if most recent trigger was a single-shot
-	bool m_triggerOneShot;
-
 	///@brief Memory depth
 	uint32_t m_memDepth;
 
@@ -127,6 +121,16 @@ protected:
 	uint32_t m_triggerWordPosition;
 
 public:
+	//This is intentionally not virtual since it's a static method used by enumeration
+	//cppcheck-suppress duplInheritedMember
+	static std::vector<SCPIInstrumentModel> GetDriverSupportedModels()
+	{
+		return
+		{
+			{"ila", {{ SCPITransportType::TRANSPORT_LAN, "localhost:5025" }}}
+        };
+	}
+
 	static std::string GetDriverNameInternal();
 	OSCILLOSCOPE_INITPROC(AntikernelLabsSerdesILA8b10b)
 };

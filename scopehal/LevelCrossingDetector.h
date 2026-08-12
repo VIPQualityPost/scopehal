@@ -43,6 +43,7 @@ struct __attribute__((packed)) ZeroCrossingPushConstants
 	uint32_t inputPerThread;
 	uint32_t outputPerThread;
 	float threshold;
+	float ftimescale;
 };
 
 struct __attribute__((packed)) PreGatherPushConstants
@@ -96,7 +97,7 @@ protected:
 	std::unique_ptr<ComputePipeline> m_gatherPipeline;
 
 	AcceleratorBuffer<int64_t> m_temporaryResults;
-	AcceleratorBuffer<int64_t> m_gatherIndexes;
+	AcceleratorBuffer<uint32_t> m_gatherIndexes;
 	AcceleratorBuffer<int64_t> m_outbuf;
 };
 

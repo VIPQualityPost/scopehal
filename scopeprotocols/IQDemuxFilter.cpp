@@ -49,14 +49,14 @@ IQDemuxFilter::IQDemuxFilter(const string& color)
 	m_alignment.AddEnumValue("100Base-T1", ALIGN_100BASET1);
 	m_alignment.SetIntVal(ALIGN_NONE);
 
-	//Output buffer is pinned host side
+	//Output buffer is dual buffered
 	m_alignOut.SetCpuAccessHint(AcceleratorBuffer<uint32_t>::HINT_LIKELY);
-	m_alignOut.SetGpuAccessHint(AcceleratorBuffer<uint32_t>::HINT_UNLIKELY);
+	m_alignOut.SetGpuAccessHint(AcceleratorBuffer<uint32_t>::HINT_LIKELY);
 
 	if(g_hasShaderInt64)
 	{
 		m_demuxComputePipeline =
-			make_shared<ComputePipeline>("shaders/IQDemuxFilter.spv", 8, sizeof(IQDemuxConstants));
+			make_shared<ComputePipeline>("shaders/IQDemuxFilter.spv", 9, sizeof(IQDemuxConstants));
 	}
 
 	m_alignComputePipeline =
@@ -72,19 +72,44 @@ string IQDemuxFilter::GetProtocolName()
 	return "IQ Demux";
 }
 
+uint32_t IQDemuxFilter::GetExecutionCapabilitiesMask()
+{
+	if(g_hasShaderInt64)
+	{
+		return
+			(uint32_t)ExecutionCapabilities::CommandBufferAppend |
+			(uint32_t)ExecutionCapabilities::CommandBufferTailCall |
+			(uint32_t)ExecutionCapabilities::VulkanOnly;
+	}
+	else
+		return 0;
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Actual decoder logic
 
-void IQDemuxFilter::Refresh(
-	[[maybe_unused]] vk::raii::CommandBuffer& cmdBuf,
-	[[maybe_unused]] shared_ptr<QueueHandle> queue)
+void IQDemuxFilter::DispatchAlign(vk::raii::CommandBuffer& cmdBuf, SparseAnalogWaveform* din, size_t len)
+{
+	//Look at a fixed window in the start of the waveform and see which one has the least (0,0) symbols
+	size_t window = min(len, (size_t)10000);
+
+	NamedDebugRange debugRange(cmdBuf, "IQDemux align");
+	m_alignComputePipeline->BindBufferNonblocking(0, din->m_samples, cmdBuf);
+	m_alignComputePipeline->BindBufferNonblocking(1, m_alignOut, cmdBuf, true);
+	m_alignComputePipeline->Dispatch(cmdBuf, (uint32_t)window, 2);
+
+	m_alignOut.MarkModifiedFromGpu();
+	m_alignComputePipeline->AddComputeMemoryBarrier(cmdBuf);
+}
+
+void IQDemuxFilter::Refresh(vk::raii::CommandBuffer& cmdBuf, shared_ptr<QueueHandle> queue)
 {
 	#ifdef HAVE_NVTX
 		nvtx3::scoped_range nrange("IQDemuxFilter::Refresh");
 	#endif
 
 	auto din = dynamic_cast<SparseAnalogWaveform*>(GetInputWaveform(0));
-	ClearErrors();
+	ClearMessages();
 	if(!din)
 	{
 		if(!GetInput(0))
@@ -100,44 +125,16 @@ void IQDemuxFilter::Refresh(
 	}
 
 	size_t len = din->m_samples.size();
-	LogTrace("%zu sampled data points\n", len);
+	//LogTrace("%zu sampled data points\n", len);
 
 	//Figure out the proper I-vs-Q alignment (even/odd is not specified)
 	auto align = static_cast<AlignmentType>(m_alignment.GetIntVal());
-	size_t istart = 0;
-
-	if(align == ALIGN_100BASET1)
-	{
-		//We need to do this on the GPU even if it's not super time consuming, because it avoids a round trip
-		//This doesn't depend on int64 so can be done on any GPU, just normal float32 and int32 operations
-
-		//Look at a fixed window in the start of the waveform and see which one has the least (0,0) symbols
-		size_t window = min(len, (size_t)10000);
-
-		//Do the alignment check on the GPU
-		cmdBuf.begin({});
-
-		m_alignComputePipeline->BindBufferNonblocking(0, din->m_samples, cmdBuf);
-		m_alignComputePipeline->BindBufferNonblocking(1, m_alignOut, cmdBuf, true);
-		m_alignComputePipeline->Dispatch(cmdBuf, (uint32_t)window, 2);
-		m_alignOut.PrepareForCpuAccessNonblocking(cmdBuf);
-
-		cmdBuf.end();
-		queue->SubmitAndBlock(cmdBuf);
-
-		LogTrace("Phase 0: zeros = %u\n", m_alignOut[0]);
-		LogTrace("Phase 1: zeros = %u\n", m_alignOut[1]);
-
-		if(m_alignOut[0] < m_alignOut[1])
-			istart = 0;
-		else
-			istart = 1;
-	}
 
 	//Make output waveforms
 	auto iout = SetupEmptySparseAnalogOutputWaveform(din, 0);
 	auto qout = SetupEmptySparseAnalogOutputWaveform(din, 1);
-	size_t outlen = (len - istart) / 2;
+	size_t outlen = (len - 1) / 2;	//Truncate the last symbol regardless of which phase we aligned to.
+									//This avoids needing a round trip to the GPU
 	iout->Resize(outlen);
 	qout->Resize(outlen);
 	iout->Rename("IQDemuxFilter.I");
@@ -145,36 +142,64 @@ void IQDemuxFilter::Refresh(
 
 	if(g_hasShaderInt64)
 	{
-		cmdBuf.begin({});
+		//Calculate alignment if needed
+		bool needAlign = (align == ALIGN_100BASET1);
+		if(needAlign)
+			DispatchAlign(cmdBuf, din, len);
 
-		IQDemuxConstants cfg;
-		cfg.istart = istart;
-		cfg.outlen = outlen;
+		{
+			NamedDebugRange debugRange(cmdBuf, "IQDemux");
 
-		uint64_t numThreads = outlen;
-		const uint64_t blockSize = 64;
-		const uint64_t numBlocks = GetComputeBlockCount(numThreads, blockSize);
+			IQDemuxConstants cfg;
+			cfg.useBaseT1Alignment = needAlign;
+			cfg.outlen = outlen;
 
-		//Do the demux
-		m_demuxComputePipeline->BindBufferNonblocking(0, din->m_samples, cmdBuf);
-		m_demuxComputePipeline->BindBufferNonblocking(1, din->m_offsets, cmdBuf);
-		m_demuxComputePipeline->BindBufferNonblocking(2, iout->m_samples, cmdBuf, true);
-		m_demuxComputePipeline->BindBufferNonblocking(3, iout->m_offsets, cmdBuf, true);
-		m_demuxComputePipeline->BindBufferNonblocking(4, iout->m_durations, cmdBuf, true);
-		m_demuxComputePipeline->BindBufferNonblocking(5, qout->m_samples, cmdBuf, true);
-		m_demuxComputePipeline->BindBufferNonblocking(6, qout->m_offsets, cmdBuf, true);
-		m_demuxComputePipeline->BindBufferNonblocking(7, qout->m_durations, cmdBuf, true);
-		m_demuxComputePipeline->Dispatch(cmdBuf, cfg, numBlocks);
+			uint64_t numThreads = outlen;
+			const uint64_t blockSize = 64;
+			const uint64_t numBlocks = GetComputeBlockCount(numThreads, blockSize);
 
-		iout->MarkModifiedFromGpu();
-		qout->MarkModifiedFromGpu();
+			//Do the demux
+			m_demuxComputePipeline->BindBufferNonblocking(0, din->m_samples, cmdBuf);
+			m_demuxComputePipeline->BindBufferNonblocking(1, din->m_offsets, cmdBuf);
+			m_demuxComputePipeline->BindBufferNonblocking(2, iout->m_samples, cmdBuf, true);
+			m_demuxComputePipeline->BindBufferNonblocking(3, iout->m_offsets, cmdBuf, true);
+			m_demuxComputePipeline->BindBufferNonblocking(4, iout->m_durations, cmdBuf, true);
+			m_demuxComputePipeline->BindBufferNonblocking(5, qout->m_samples, cmdBuf, true);
+			m_demuxComputePipeline->BindBufferNonblocking(6, qout->m_offsets, cmdBuf, true);
+			m_demuxComputePipeline->BindBufferNonblocking(7, qout->m_durations, cmdBuf, true);
+			m_demuxComputePipeline->BindBufferNonblocking(8, m_alignOut, cmdBuf);
+			m_demuxComputePipeline->Dispatch(cmdBuf, cfg, numBlocks);
 
-		cmdBuf.end();
-		queue->SubmitAndBlock(cmdBuf);
+			iout->MarkModifiedFromGpu();
+			qout->MarkModifiedFromGpu();
+		}
 	}
 
+	//CPU fallback if no int64 support
 	else
 	{
+		//GPU side alignment check
+		size_t istart = 0;
+		if(align == ALIGN_100BASET1)
+		{
+			//Do the alignment check on the GPU
+			cmdBuf.begin({});
+			{
+				DispatchAlign(cmdBuf, din, len);
+				m_alignOut.PrepareForCpuAccessNonblocking(cmdBuf);
+			}
+			cmdBuf.end();
+			queue->SubmitAndBlock(cmdBuf);
+
+			LogTrace("Phase 0: zeros = %u\n", m_alignOut[0]);
+			LogTrace("Phase 1: zeros = %u\n", m_alignOut[1]);
+
+			if(m_alignOut[0] < m_alignOut[1])
+				istart = 0;
+			else
+				istart = 1;
+		}
+
 		iout->PrepareForCpuAccess();
 		qout->PrepareForCpuAccess();
 

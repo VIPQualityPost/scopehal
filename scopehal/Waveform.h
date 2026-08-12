@@ -91,7 +91,7 @@ public:
 	{}
 
 	/**
-		@brief Assings a human readable name to the waveform for debug purposes
+		@brief Assigns a human readable name to the waveform for debug purposes
 
 		This value may be printed in internal log messages, by the Vulkan validation layers, displayed in frame
 		debuggers, etc.
@@ -169,6 +169,9 @@ public:
 
 	///@brief Returns the number of samples allocated in this waveform
 	virtual size_t capacity() const  =0;
+
+	///@brief Gets the amount of memory consumed by the waveform (may be CPU, GPU, or mirrored)
+	virtual size_t GetMemoryBytes() const =0;
 
 	///@brief Returns true if this waveform contains no samples, false otherwise
 	virtual bool empty()
@@ -457,6 +460,9 @@ public:
 	virtual void Reserve(size_t size) override
 	{ m_samples.reserve(size); }
 
+	virtual size_t GetMemoryBytes() const override
+	{ return m_samples.GetMemoryBytes(); }
+
 	virtual size_t size() const override
 	{ return m_samples.size(); }
 
@@ -609,6 +615,9 @@ public:
 	virtual size_t size() const override
 	{ return m_samples.size(); }
 
+	virtual size_t GetMemoryBytes() const override
+	{ return m_samples.GetMemoryBytes() + m_offsets.GetMemoryBytes() + m_durations.GetMemoryBytes(); }
+
 	virtual size_t capacity() const override
 	{ return m_samples.capacity(); }
 
@@ -684,6 +693,22 @@ public:
 	{}
 
 	virtual ~UniformDigitalBusWaveform32()
+	{}
+};
+
+/**
+	@brief A multi-bit (up to 32 bits) digital waveform sampled at variable rate
+	@ingroup datamodel
+ */
+class SparseDigitalBusWaveform32
+	: public SparseWaveform<uint32_t>
+{
+public:
+	SparseDigitalBusWaveform32(const std::string& name = "")
+		: SparseWaveform<uint32_t>(name)
+	{}
+
+	virtual ~SparseDigitalBusWaveform32()
 	{}
 };
 

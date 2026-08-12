@@ -249,7 +249,7 @@ void EthernetClause73AutonegotiationDecoder::Refresh(
 		nvtx3::scoped_range nrange("EthernetClause73AutonegotiationDecoder::Refresh");
 	#endif
 
-	ClearErrors();
+	ClearMessages();
 
 	// Get the input data
 	auto din = dynamic_cast<SparseDigitalWaveform*>(GetInputWaveform(0));
@@ -361,7 +361,8 @@ string Clause73Waveform::GetText(size_t i)
 	EthernetClause73AutonegotiationDecoder::DisplayFormat format =
 		(EthernetClause73AutonegotiationDecoder::DisplayFormat)m_displayformat.GetIntVal();
 
-	if(format == EthernetClause73AutonegotiationDecoder::FORMAT_COMPACT) {
+	if(format == EthernetClause73AutonegotiationDecoder::FORMAT_COMPACT)
+	{
 		// Compact format - single line
 		char tmp[512];
 
@@ -380,7 +381,9 @@ string Clause73Waveform::GetText(size_t i)
 		);
 
 		return string(tmp);
-	} else {
+	}
+	else
+	{
 		// Detailed format - show all fields with bit positions
 		// string out;
 		char out[512];
@@ -433,7 +436,7 @@ string Clause73Waveform::GetText(size_t i)
 			page.fec);
 
 		// D[48] Code
-		pos += snprintf(out + pos, sizeof(out) - pos,
+		/* pos += */ snprintf(out + pos, sizeof(out) - pos,
 			" D[48] Code: %d\n",
 			page.code);
 
