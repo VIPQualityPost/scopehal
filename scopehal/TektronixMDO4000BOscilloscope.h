@@ -99,18 +99,13 @@ public:
 
 	//Sample rate and depth
 	virtual std::vector<uint64_t> GetSampleRatesNonInterleaved() override;
-	virtual std::vector<uint64_t> GetSampleRatesInterleaved() override;
-	virtual std::set<InterleaveConflict> GetInterleaveConflicts() override;
 	virtual std::vector<uint64_t> GetSampleDepthsNonInterleaved() override;
-	virtual std::vector<uint64_t> GetSampleDepthsInterleaved() override;
 	virtual uint64_t GetSampleRate() override;
 	virtual uint64_t GetSampleDepth() override;
 	virtual void SetSampleDepth(uint64_t depth) override;
 	virtual void SetSampleRate(uint64_t rate) override;
 	virtual void SetTriggerOffset(int64_t offset) override;
 	virtual int64_t GetTriggerOffset() override;
-	virtual bool IsInterleaving() override;
-	virtual bool SetInterleaving(bool combine) override;
 	virtual bool HasInterleavingControls() override;
 
 	//Logic analyzer - MDO4000B supports D0-D15 via MSO pod
@@ -129,9 +124,6 @@ public:
 	virtual int64_t GetCenterFrequency(size_t channel) override;
 	virtual void SetResolutionBandwidth(int64_t rbw) override;
 	virtual int64_t GetResolutionBandwidth() override;
-
-	//Probe detection
-	virtual std::string GetProbeName(size_t i) override;
 
 public:
 	static std::string GetDriverNameInternal();
@@ -168,6 +160,27 @@ protected:
 	///@brief Parse a WFMOutpre? response into a preamble struct
 	bool ReadWFMOutprePreamble(const std::string& preamble_in, struct mdo4k_preamble& preamble_out);
 
+	///@brief Query and cache the maximum analog sample rate (CONFIG:ANALO:MAXSAMPLER?)
+	uint64_t GetMaxAnalogSampleRate();
+
+	///@brief Cached value and validity flag for GetMaxAnalogSampleRate()
+	uint64_t m_maxSampleRate = 0;
+	bool m_maxSampleRateValid = false;
+
+	///@brief True if the instrument has an integrated RF spectrum analyzer
+	///(MDO series only; MSO/DPO4000B models have no RF input)
+	bool m_hasRF = false;
+
+	///@brief Query and cache the supported record lengths (CONFIG:ANALO:RECLENS?)
+	std::vector<uint64_t> GetSupportedSampleDepths();
+
+	///@brief Cached value and validity flag for GetSupportedSampleDepths()
+	std::vector<uint64_t> m_supportedSampleDepths;
+	bool m_supportedSampleDepthsValid = false;
+
+	///@brief 1-2-5 time/div steps inside the HOR:SCALE range (400 ps..1000 s)
+	std::vector<double> GetTimebaseScales();
+
 	///@brief Acquire analog data
 	bool AcquireAnalogData(std::map<int, std::vector<WaveformBase*> >& pending_waveforms);
 
@@ -183,20 +196,31 @@ protected:
 	///@brief Read the trigger level for a given channel
 	float ReadTriggerLevel(OscilloscopeChannel* chan);
 
-	///@brief Starting index for digital channels (D0-D15)
-	size_t m_digitalChannelBaseMDO;
+	///@brief Digital channel base/count are stored in the base class fields
+	///m_digitalChannelBase / m_digitalChannelCount
 
-	///@brief Number of digital channels present
-	size_t m_digitalChannelCountMDO;
+	/**
+		@brief Check if a channel is digital given the index
 
-	///@brief True if we have the SA3/SA6 spectrum analyzer option
-	bool m_hasRF;
+		@param index	Channel number
 
-	///@brief True if the RF input is in clipping
-	bool m_rfClipping;
+		@return	True if digital, false if analog or spectrum
+	 */
+	bool IsDigitalChannel(size_t index)
+	{
+		if(index < m_digitalChannelBase)
+			return false;
+		return (index < (m_digitalChannelBase + m_digitalChannelCount));
+	}
 
-	///@brief Map of digital channel number to its index in m_channels
-	std::map<int, size_t> m_digitalChannelIndex;
+	///@brief Rebuild the current trigger object as the given type, replacing any existing trigger
+	template<class T>
+	T* RecreateTrigger()
+	{
+		delete m_trigger;
+		m_trigger = new T(this);
+		return dynamic_cast<T*>(m_trigger);
+	}
 	
 	void PushEdgeTrigger(EdgeTrigger* trig);
 	void PullEdgeTrigger();
