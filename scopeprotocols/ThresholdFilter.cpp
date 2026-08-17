@@ -76,7 +76,7 @@ void ThresholdFilter::Refresh(vk::raii::CommandBuffer& cmdBuf, std::shared_ptr<Q
 	#endif
 
 	//Make sure we've got valid inputs
-	ClearErrors();
+	ClearMessages();
 	if(!VerifyAllInputsOK())
 	{
 		if(!GetInput(0))
@@ -91,6 +91,11 @@ void ThresholdFilter::Refresh(vk::raii::CommandBuffer& cmdBuf, std::shared_ptr<Q
 	//Get the input data
 	auto din = GetInputWaveform(0);
 	auto len = din->size();
+
+	//Propagate units from input to threshold/hysteresis
+	auto yunit = GetInput(0).GetYAxisUnits();
+	m_threshold.SetUnit(yunit);
+	m_hysteresis.SetUnit(yunit);
 
 	//Setup
 	float midpoint = m_threshold.GetFloatVal();

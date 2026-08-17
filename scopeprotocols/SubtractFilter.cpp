@@ -71,12 +71,32 @@ string SubtractFilter::GetProtocolName()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Actual decoder logic
 
-void SubtractFilter::Refresh(vk::raii::CommandBuffer& cmdBuf, shared_ptr<QueueHandle> queue)
+uint32_t SubtractFilter::GetExecutionCapabilitiesMask()
+{
+	//for now, only vector-vector path is gpu accelerated
+	bool veca = GetInput(0).GetType() == Stream::STREAM_TYPE_ANALOG;
+	bool vecb = GetInput(1).GetType() == Stream::STREAM_TYPE_ANALOG;
+
+	//degrees are not accelerated because modulo reduction needed in a shader that doesnt yet exist
+	if(veca && vecb && (GetYAxisUnits(0) != Unit::UNIT_DEGREES) )
+	{
+		return
+			(uint32_t)ExecutionCapabilities::CommandBufferAppend |
+			(uint32_t)ExecutionCapabilities::CommandBufferTailCall |
+			(uint32_t)ExecutionCapabilities::VulkanOnly;
+	}
+
+	//everything else is nothing special
+	else
+		return 0;
+}
+
+void SubtractFilter::Refresh(vk::raii::CommandBuffer& cmdBuf, [[maybe_unused]] shared_ptr<QueueHandle> queue)
 {
 	#ifdef HAVE_NVTX
 		nvtx3::scoped_range range("SubtractFilter::Refresh");
 	#endif
-	ClearErrors();
+	ClearMessages();
 
 	//Set units as early as possible so we can spawn in the same plot as our parent signal when creating a filter
 	if(GetInput(0))
@@ -88,8 +108,20 @@ void SubtractFilter::Refresh(vk::raii::CommandBuffer& cmdBuf, shared_ptr<QueueHa
 	bool veca = GetInput(0).GetType() == Stream::STREAM_TYPE_ANALOG;
 	bool vecb = GetInput(1).GetType() == Stream::STREAM_TYPE_ANALOG;
 
+	bool scala = GetInput(0).GetType() == Stream::STREAM_TYPE_ANALOG_SCALAR;
+	bool scalb = GetInput(1).GetType() == Stream::STREAM_TYPE_ANALOG_SCALAR;
+
+	//If either input is bogus, bail out
+	if(!(veca || scala) || !(vecb || scalb) )
+	{
+		AddErrorMessage("Missing input", "One or more inputs are unconnected or invalid");
+		SetData(nullptr, 0);
+		m_streams[0].m_stype = Stream::STREAM_TYPE_UNDEFINED;
+		return;
+	}
+
 	if(veca && vecb)
-		DoRefreshVectorVector(cmdBuf, queue);
+		DoRefreshVectorVector(cmdBuf);
 	else if(!veca && !vecb)
 		DoRefreshScalarScalar();
 	else if(veca)
@@ -109,7 +141,7 @@ void SubtractFilter::DoRefreshScalarScalar()
 	m_streams[0].m_value = GetInput(0).GetScalarValue() - GetInput(1).GetScalarValue();
 }
 
-void SubtractFilter::DoRefreshVectorVector(vk::raii::CommandBuffer& cmdBuf, std::shared_ptr<QueueHandle> queue)
+void SubtractFilter::DoRefreshVectorVector(vk::raii::CommandBuffer& cmdBuf)
 {
 	//Make sure we've got valid inputs
 	if(!VerifyAllInputsOK())
@@ -217,23 +249,22 @@ void SubtractFilter::DoRefreshVectorVector(vk::raii::CommandBuffer& cmdBuf, std:
 	//Just regular subtraction, use the GPU filter
 	else
 	{
-		cmdBuf.begin({});
+		{
+			NamedDebugRange debugRange(cmdBuf, "SubtractFilter");
 
-		SubtractFilterConstants cfg;
-		cfg.offsetP = offsetP;
-		cfg.offsetN = offsetN;
-		cfg.size = len;
+			SubtractFilterConstants cfg;
+			cfg.offsetP = offsetP;
+			cfg.offsetN = offsetN;
+			cfg.size = len;
 
-		m_computePipeline.BindBufferNonblocking(0, sdin_p ? sdin_p->m_samples : udin_p->m_samples, cmdBuf);
-		m_computePipeline.BindBufferNonblocking(1, sdin_n ? sdin_n->m_samples : udin_n->m_samples, cmdBuf);
-		m_computePipeline.BindBufferNonblocking(2, scap ? scap->m_samples : ucap->m_samples, cmdBuf, true);
-		const uint32_t compute_block_count = GetComputeBlockCount(len, 64);
-		m_computePipeline.Dispatch(cmdBuf, cfg,
-			min(compute_block_count, 32768u),
-			compute_block_count / 32768 + 1);
-
-		cmdBuf.end();
-		queue->SubmitAndBlock(cmdBuf);
+			m_computePipeline.BindBufferNonblocking(0, sdin_p ? sdin_p->m_samples : udin_p->m_samples, cmdBuf);
+			m_computePipeline.BindBufferNonblocking(1, sdin_n ? sdin_n->m_samples : udin_n->m_samples, cmdBuf);
+			m_computePipeline.BindBufferNonblocking(2, scap ? scap->m_samples : ucap->m_samples, cmdBuf, true);
+			const uint32_t compute_block_count = GetComputeBlockCount(len, 64);
+			m_computePipeline.Dispatch(cmdBuf, cfg,
+				min(compute_block_count, 32768u),
+				compute_block_count / 32768 + 1);
+		}
 
 		if(scap)
 			scap->m_samples.MarkModifiedFromGpu();

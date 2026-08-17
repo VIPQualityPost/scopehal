@@ -45,6 +45,7 @@ ClockRecoveryFilter::ClockRecoveryFilter(const string& color)
 	, m_threshold(m_parameters["Threshold"])
 	, m_mtMode(m_parameters["Multithreading"])
 	, m_secondPassState("ClockRecoveryFilter.m_secondPassState")
+	, m_lastIterationOutputCount(0)
 {
 	AddDigitalStream("recClk");
 	AddStream(Unit(Unit::UNIT_VOLTS), "sampledData", Stream::STREAM_TYPE_ANALOG);
@@ -116,7 +117,7 @@ void ClockRecoveryFilter::Refresh(
 	#endif
 
 	//Require a data signal, but not necessarily a gate
-	ClearErrors();
+	ClearMessages();
 	if(!VerifyInputOK(0))
 	{
 		if(!GetInput(0))
@@ -159,6 +160,9 @@ void ClockRecoveryFilter::Refresh(
 	if(gate)
 		gate->PrepareForCpuAccess();
 
+	//Update units of threshold
+	m_threshold.SetUnit(GetInput(0).GetYAxisUnits());
+
 	//Timestamps of the edges
 	size_t nedges = 0;
 	AcceleratorBuffer<int64_t> vedges;
@@ -198,12 +202,6 @@ void ClockRecoveryFilter::Refresh(
 	else if(!uadin)
 		pedges = &vedges;
 	auto& edges = *pedges;
-
-	//Get the previous number of edges, if any
-	auto oldData = GetData(0);
-	uint64_t lastNumEdges = 0;
-	if(oldData)
-		lastNumEdges = oldData->size();
 
 	//Create the output waveform and copy our timescales
 	auto cap = SetupEmptySparseDigitalOutputWaveform(din, 0);
@@ -289,11 +287,15 @@ void ClockRecoveryFilter::Refresh(
 			//Default to the larger of nyquist/8 and the previous edge count plus some margin
 			//Goal is a stable state with minimal reallocations, but without wasting a lot of VRAM
 			uint64_t baselineEdgeCount = realMaxEdges/16;
-			uint64_t lastEdgesPadded = lastNumEdges + 2*numThreads;
-			baselineEdgeCount = max(baselineEdgeCount, lastEdgesPadded);
+			const uint64_t extraEdgesToAllow = 64;
+			baselineEdgeCount = max(baselineEdgeCount, m_lastIterationOutputCount + extraEdgesToAllow*numThreads);
 
 			for(uint64_t maxEdges = baselineEdgeCount; maxEdges < (din->size() - 1); maxEdges *= 2)
 			{
+				#ifdef HAVE_NVTX
+					nvtx3::scoped_range range2("Main loop");
+				#endif
+
 				//On the last iteration, due to rounding we can go slightly above realMaxEdges
 				if(maxEdges > realMaxEdges)
 					maxEdges = realMaxEdges;
@@ -317,90 +319,109 @@ void ClockRecoveryFilter::Refresh(
 				//TODO: we should have a U32_GPU_SMALL pool here once that exists, for now use U32_GPU_WAVEFORM
 				ScratchBuffer_uint32_t bufferTooSmall(ScratchBufferManager::U32_GPU_WAVEFORM);
 				bufferTooSmall->resize(1);
-				bufferTooSmall->PrepareForCpuAccess();
+				bufferTooSmall->PrepareForCpuAccessIgnoringGpuData();
 				(*bufferTooSmall)[0] = 0;
 				bufferTooSmall->MarkModifiedFromCpu();
 
 				cmdBuf.begin({});
+				{
+					NamedDebugRange debugRange(cmdBuf, "ClockRecoveryPLL main loop");
 
-				//Constants shared by all passes
-				ClockRecoveryConstants cfg;
-				cfg.nedges = nedges;
-				cfg.numEdgesPerThread = GetComputeBlockCount(nedges, numThreads);
-				cfg.fnyquist = fnyquist;
-				cfg.maxOffsetsPerThread = GetComputeBlockCount(maxEdges, numThreads);
-				cfg.initialPeriod = initialPeriod;
-				cfg.tend = tend;
-				cfg.timescale = din->m_timescale;
-				cfg.triggerPhase = din->m_triggerPhase;
-				cfg.maxInputSamples = din->size();
+					//Constants shared by all passes
+					ClockRecoveryConstants cfg;
+					cfg.nedges = nedges;
+					cfg.numEdgesPerThread = GetComputeBlockCount(nedges, numThreads);
+					cfg.fnyquist = fnyquist;
+					cfg.maxOffsetsPerThread = GetComputeBlockCount(maxEdges, numThreads);
+					cfg.initialPeriod = initialPeriod;
+					cfg.tend = tend;
+					cfg.timescale = din->m_timescale;
+					cfg.triggerPhase = din->m_triggerPhase;
+					cfg.maxInputSamples = din->size();
 
-				//Second pass output buffer
-				ScratchBuffer_int64_t secondPassTimestamps(ScratchBufferManager::I64_GPU_WAVEFORM);
+					//Second pass output buffer
+					ScratchBuffer_int64_t secondPassTimestamps(ScratchBufferManager::I64_GPU_WAVEFORM);
 
-				//We have no idea how many edges we might generate since the PLL can slew arbitrarily depending on input.
-				//So we have to guess conservatively based on maxBuffer and if we get it wrong, allocate more and try again
-				size_t maxBuffer = cfg.maxOffsetsPerThread * numThreads;
-				firstPassTimestamps->resize(maxBuffer);
-				secondPassTimestamps->resize(maxBuffer);
-				cap->Resize(maxBuffer);
-				scap->Resize(maxBuffer);
+					//We have no idea how many edges we might generate since the PLL can slew arbitrarily depending on input.
+					//So we have to guess conservatively based on maxBuffer and if we get it wrong, allocate more and try again
+					size_t maxBuffer = cfg.maxOffsetsPerThread * numThreads;
+					firstPassTimestamps->resize(maxBuffer);
+					secondPassTimestamps->resize(maxBuffer);
+					cap->Resize(maxBuffer);
+					scap->Resize(maxBuffer);
 
-				//Run the first pass
-				m_firstPassComputePipeline->BindBufferNonblocking(0, edges, cmdBuf);
-				m_firstPassComputePipeline->BindBufferNonblocking(1, *firstPassTimestamps, cmdBuf);
-				m_firstPassComputePipeline->BindBufferNonblocking(2, *firstPassState, cmdBuf);
-				m_firstPassComputePipeline->BindBufferNonblocking(3, *bufferTooSmall, cmdBuf);
-				m_firstPassComputePipeline->Dispatch(cmdBuf, cfg, numBlocks);
-				m_firstPassComputePipeline->AddComputeMemoryBarrier(cmdBuf);
+					//Run the first pass
+					{
+						NamedDebugRange shaderRange(cmdBuf, "First pass");
 
-				firstPassTimestamps->MarkModifiedFromGpu();
-				firstPassState->MarkModifiedFromGpu();
+						m_firstPassComputePipeline->BindBufferNonblocking(0, edges, cmdBuf);
+						m_firstPassComputePipeline->BindBufferNonblocking(1, *firstPassTimestamps, cmdBuf, true);
+						m_firstPassComputePipeline->BindBufferNonblocking(2, *firstPassState, cmdBuf, true);
+						m_firstPassComputePipeline->BindBufferNonblocking(3, *bufferTooSmall, cmdBuf, true);
+						m_firstPassComputePipeline->Dispatch(cmdBuf, cfg, numBlocks);
+						m_firstPassComputePipeline->AddComputeMemoryBarrier(cmdBuf);
 
-				//Run the second pass
-				m_secondPassComputePipeline->BindBufferNonblocking(0, edges, cmdBuf);
-				m_secondPassComputePipeline->BindBufferNonblocking(1, *firstPassTimestamps, cmdBuf);
-				m_secondPassComputePipeline->BindBufferNonblocking(2, *firstPassState, cmdBuf);
-				m_secondPassComputePipeline->BindBufferNonblocking(3, *secondPassTimestamps, cmdBuf);
-				m_secondPassComputePipeline->BindBufferNonblocking(4, m_secondPassState, cmdBuf);
-				m_secondPassComputePipeline->BindBufferNonblocking(5, *bufferTooSmall, cmdBuf);
-				m_secondPassComputePipeline->Dispatch(cmdBuf, cfg, numBlocks);
-				m_secondPassComputePipeline->AddComputeMemoryBarrier(cmdBuf);
+						firstPassTimestamps->MarkModifiedFromGpu();
+						firstPassState->MarkModifiedFromGpu();
+					}
 
-				secondPassTimestamps->MarkModifiedFromGpu();
-				m_secondPassState.MarkModifiedFromGpu();
+					//Run the second pass
+					{
+						NamedDebugRange shaderRange(cmdBuf, "Second pass");
 
-				//Run the final pass.
-				//This also generates the squarewave output and the sample data
-				auto sacap = dynamic_cast<SparseAnalogWaveform*>(scap);
-				m_finalPassComputePipeline->BindBufferNonblocking(0, *firstPassTimestamps, cmdBuf);
-				m_finalPassComputePipeline->BindBufferNonblocking(1, *firstPassState, cmdBuf);
-				m_finalPassComputePipeline->BindBufferNonblocking(2, *secondPassTimestamps, cmdBuf);
-				m_finalPassComputePipeline->BindBufferNonblocking(3, m_secondPassState, cmdBuf);
-				m_finalPassComputePipeline->BindBufferNonblocking(4, cap->m_offsets, cmdBuf);
-				m_finalPassComputePipeline->BindBufferNonblocking(5, cap->m_samples, cmdBuf);
-				m_finalPassComputePipeline->BindBufferNonblocking(6, cap->m_durations, cmdBuf);
-				m_finalPassComputePipeline->BindBufferNonblocking(7, sacap->m_samples, cmdBuf);
-				//this assumes input is uniformly sampled for now
-				m_finalPassComputePipeline->BindBufferNonblocking(8, uadin->m_samples, cmdBuf);
-				m_finalPassComputePipeline->Dispatch(cmdBuf, cfg, 1, numBlocks);
-				m_finalPassComputePipeline->AddComputeMemoryBarrier(cmdBuf);
+						m_secondPassComputePipeline->BindBufferNonblocking(0, edges, cmdBuf);
+						m_secondPassComputePipeline->BindBufferNonblocking(1, *firstPassTimestamps, cmdBuf);
+						m_secondPassComputePipeline->BindBufferNonblocking(2, *firstPassState, cmdBuf);
+						m_secondPassComputePipeline->BindBufferNonblocking(3, *secondPassTimestamps, cmdBuf, true);
+						m_secondPassComputePipeline->BindBufferNonblocking(4, m_secondPassState, cmdBuf, true);
+						m_secondPassComputePipeline->BindBufferNonblocking(5, *bufferTooSmall, cmdBuf);
+						m_secondPassComputePipeline->Dispatch(cmdBuf, cfg, numBlocks);
+						m_secondPassComputePipeline->AddComputeMemoryBarrier(cmdBuf);
 
-				firstPassState->PrepareForCpuAccessNonblocking(cmdBuf);
-				m_secondPassState.PrepareForCpuAccessNonblocking(cmdBuf);
+						secondPassTimestamps->MarkModifiedFromGpu();
+						m_secondPassState.MarkModifiedFromGpu();
+					}
 
-				//Output was entirely created on the GPU, no need to touch the CPU for that
-				cap->MarkModifiedFromGpu();
-				scap->MarkModifiedFromGpu();
-				bufferTooSmall->MarkModifiedFromGpu();
-				generatedSquarewaveOnGPU = true;
+					//Run the final pass.
+					//This also generates the squarewave output and the sample data
+					auto sacap = dynamic_cast<SparseAnalogWaveform*>(scap);
+					{
+						NamedDebugRange shaderRange(cmdBuf, "Final pass");
 
-				//Copy the offsets and durations from the sampled data
-				sacap->m_offsets.CopyFromNonblocking(cmdBuf, cap->m_offsets, false);
-				sacap->m_durations.CopyFromNonblocking(cmdBuf, cap->m_durations, false);
+						m_finalPassComputePipeline->BindBufferNonblocking(0, *firstPassTimestamps, cmdBuf);
+						m_finalPassComputePipeline->BindBufferNonblocking(1, *firstPassState, cmdBuf);
+						m_finalPassComputePipeline->BindBufferNonblocking(2, *secondPassTimestamps, cmdBuf);
+						m_finalPassComputePipeline->BindBufferNonblocking(3, m_secondPassState, cmdBuf);
+						m_finalPassComputePipeline->BindBufferNonblocking(4, cap->m_offsets, cmdBuf, true);
+						m_finalPassComputePipeline->BindBufferNonblocking(5, cap->m_samples, cmdBuf, true);
+						m_finalPassComputePipeline->BindBufferNonblocking(6, cap->m_durations, cmdBuf, true);
+						m_finalPassComputePipeline->BindBufferNonblocking(7, sacap->m_samples, cmdBuf, true);
+						//this assumes input is uniformly sampled for now
+						m_finalPassComputePipeline->BindBufferNonblocking(8, uadin->m_samples, cmdBuf);
+						m_finalPassComputePipeline->Dispatch(cmdBuf, cfg, 1, numThreads); //1 thread block local size
+						m_finalPassComputePipeline->AddComputeMemoryBarrier(cmdBuf);
 
-				//Copy status flags
-				bufferTooSmall->PrepareForCpuAccessNonblocking(cmdBuf);
+						firstPassState->PrepareForCpuAccessNonblocking(cmdBuf);
+						m_secondPassState.PrepareForCpuAccessNonblocking(cmdBuf);
+					}
+
+					//Output was entirely created on the GPU, no need to touch the CPU for that
+					cap->MarkModifiedFromGpu();
+					scap->MarkModifiedFromGpu();
+					bufferTooSmall->MarkModifiedFromGpu();
+					generatedSquarewaveOnGPU = true;
+
+					//Copy the offsets and durations from the sampled data
+					{
+						NamedDebugRange shaderRange(cmdBuf, "Copy results");
+						sacap->m_offsets.CopyFromNonblocking(cmdBuf, cap->m_offsets, false);
+						sacap->m_durations.CopyFromNonblocking(cmdBuf, cap->m_durations, false);
+					}
+
+					//Copy status flags
+					bufferTooSmall->PrepareForCpuAccessNonblocking(cmdBuf);
+
+				}
 
 				cmdBuf.end();
 				queue->SubmitAndBlock(cmdBuf);
@@ -416,8 +437,16 @@ void ClockRecoveryFilter::Refresh(
 				//Figure out how many edges we ended up with
 				//TODO: can we avoid this readback?
 				uint64_t numSamples = (*firstPassState)[0];
+				int64_t maxPerThread = 0;
 				for(uint64_t i=0; i<numThreads; i++)
-					numSamples += m_secondPassState[i*3];
+				{
+					auto u = m_secondPassState[i*3];
+					maxPerThread = max(maxPerThread, u);
+					numSamples += u;
+				}
+				m_lastIterationOutputCount = maxPerThread * numThreads;
+				LogTrace("Calculated output count for next iteration is %zu (%" PRIi64 " max per thread)\n",
+					m_lastIterationOutputCount, maxPerThread);
 
 				//Resize to final edge count
 				cap->Resize(numSamples);
@@ -447,6 +476,10 @@ void ClockRecoveryFilter::Refresh(
 
 	else if(g_hasShaderInt8 && g_hasShaderInt64)
 	{
+		#ifdef HAVE_NVTX
+			nvtx3::scoped_range range2("Output");
+		#endif
+
 		//Allocate output buffers as needed
 		size_t len = cap->m_offsets.size();
 		cap->m_samples.resize(len);

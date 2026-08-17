@@ -1,0 +1,624 @@
+/***********************************************************************************************************************
+*                                                                                                                      *
+* libscopeprotocols                                                                                                    *
+*                                                                                                                      *
+* Copyright (c) 2012-2026 Andrew D. Zonenberg and contributors                                                         *
+* All rights reserved.                                                                                                 *
+*                                                                                                                      *
+* Redistribution and use in source and binary forms, with or without modification, are permitted provided that the     *
+* following conditions are met:                                                                                        *
+*                                                                                                                      *
+*    * Redistributions of source code must retain the above copyright notice, this list of conditions, and the         *
+*      following disclaimer.                                                                                           *
+*                                                                                                                      *
+*    * Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the       *
+*      following disclaimer in the documentation and/or other materials provided with the distribution.                *
+*                                                                                                                      *
+*    * Neither the name of the author nor the names of any contributors may be used to endorse or promote products     *
+*      derived from this software without specific prior written permission.                                           *
+*                                                                                                                      *
+* THIS SOFTWARE IS PROVIDED BY THE AUTHORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED   *
+* TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL *
+* THE AUTHORS BE HELD LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES        *
+* (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR       *
+* BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT *
+* (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE       *
+* POSSIBILITY OF SUCH DAMAGE.                                                                                          *
+*                                                                                                                      *
+***********************************************************************************************************************/
+
+#include "../scopehal/scopehal.h"
+#include "DisplayPortMainLinkDecoder.h"
+#include "IBM8b10bWaveform.h"
+
+using namespace std;
+
+const uint8_t g_bitswapTable[] =
+{
+	0x00, 0x80, 0x40, 0xc0, 0x20, 0xa0, 0x60, 0xe0, 0x10, 0x90, 0x50, 0xd0, 0x30, 0xb0, 0x70, 0xf0,
+	0x08, 0x88, 0x48, 0xc8, 0x28, 0xa8, 0x68, 0xe8, 0x18, 0x98, 0x58, 0xd8, 0x38, 0xb8, 0x78, 0xf8,
+	0x04, 0x84, 0x44, 0xc4, 0x24, 0xa4, 0x64, 0xe4, 0x14, 0x94, 0x54, 0xd4, 0x34, 0xb4, 0x74, 0xf4,
+	0x0c, 0x8c, 0x4c, 0xcc, 0x2c, 0xac, 0x6c, 0xec, 0x1c, 0x9c, 0x5c, 0xdc, 0x3c, 0xbc, 0x7c, 0xfc,
+	0x02, 0x82, 0x42, 0xc2, 0x22, 0xa2, 0x62, 0xe2, 0x12, 0x92, 0x52, 0xd2, 0x32, 0xb2, 0x72, 0xf2,
+	0x0a, 0x8a, 0x4a, 0xca, 0x2a, 0xaa, 0x6a, 0xea, 0x1a, 0x9a, 0x5a, 0xda, 0x3a, 0xba, 0x7a, 0xfa,
+	0x06, 0x86, 0x46, 0xc6, 0x26, 0xa6, 0x66, 0xe6, 0x16, 0x96, 0x56, 0xd6, 0x36, 0xb6, 0x76, 0xf6,
+	0x0e, 0x8e, 0x4e, 0xce, 0x2e, 0xae, 0x6e, 0xee, 0x1e, 0x9e, 0x5e, 0xde, 0x3e, 0xbe, 0x7e, 0xfe,
+	0x01, 0x81, 0x41, 0xc1, 0x21, 0xa1, 0x61, 0xe1, 0x11, 0x91, 0x51, 0xd1, 0x31, 0xb1, 0x71, 0xf1,
+	0x09, 0x89, 0x49, 0xc9, 0x29, 0xa9, 0x69, 0xe9, 0x19, 0x99, 0x59, 0xd9, 0x39, 0xb9, 0x79, 0xf9,
+	0x05, 0x85, 0x45, 0xc5, 0x25, 0xa5, 0x65, 0xe5, 0x15, 0x95, 0x55, 0xd5, 0x35, 0xb5, 0x75, 0xf5,
+	0x0d, 0x8d, 0x4d, 0xcd, 0x2d, 0xad, 0x6d, 0xed, 0x1d, 0x9d, 0x5d, 0xdd, 0x3d, 0xbd, 0x7d, 0xfd,
+	0x03, 0x83, 0x43, 0xc3, 0x23, 0xa3, 0x63, 0xe3, 0x13, 0x93, 0x53, 0xd3, 0x33, 0xb3, 0x73, 0xf3,
+	0x0b, 0x8b, 0x4b, 0xcb, 0x2b, 0xab, 0x6b, 0xeb, 0x1b, 0x9b, 0x5b, 0xdb, 0x3b, 0xbb, 0x7b, 0xfb,
+	0x07, 0x87, 0x47, 0xc7, 0x27, 0xa7, 0x67, 0xe7, 0x17, 0x97, 0x57, 0xd7, 0x37, 0xb7, 0x77, 0xf7,
+	0x0f, 0x8f, 0x4f, 0xcf, 0x2f, 0xaf, 0x6f, 0xef, 0x1f, 0x9f, 0x5f, 0xdf, 0x3f, 0xbf, 0x7f, 0xff
+};
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Construction / destruction
+
+DisplayPortMainLinkDecoder::DisplayPortMainLinkDecoder(const string& color)
+	: PacketDecoder(color, CAT_SERIAL)
+{
+	//Add inputs. We take a single 8b10b coded stream
+	CreateInput<InputConstraintWaveformType<IBM8b10bWaveform> >("data");
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Accessors
+
+string DisplayPortMainLinkDecoder::GetProtocolName()
+{
+	return "DisplayPort - Main Link";
+}
+
+vector<string> DisplayPortMainLinkDecoder::GetHeaders()
+{
+	vector<string> ret;
+	ret.push_back("Pixels");
+	return ret;
+}
+
+bool DisplayPortMainLinkDecoder::GetShowImageColumn()
+{
+	return true;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Actual decoder logic
+
+//TODO table driven/faster impl
+uint8_t DisplayPortMainLinkDecoder::RunScrambler(uint16_t& state)
+{
+	uint8_t ret = 0;
+
+	for(int j=0; j<8; j++)
+	{
+		bool b = (state & 0x8000) ? true : false;
+		ret >>= 1;
+
+		if(b)
+		{
+			ret |= 0x80;
+			state ^= 0x1c;
+		}
+		state = (state << 1) | b;
+	}
+
+	return ret;
+}
+
+/**
+	@brief Advances the scrambler by a single bit. This is the same scrambler polynomial as PCIe.
+ */
+bool DisplayPortMainLinkDecoder::RunScramblerSingle(uint16_t& state)
+{
+	LogDebug("RunScramblerSingle state=%04x\n", state);
+	LogIndenter li;
+
+	bool b = (state & 0x8000) ? true : false;
+	if(b)
+		state ^= 0x1c;
+	state = (state << 1) | b;
+
+	LogDebug("final state = %04x, b = %d\n", state, b);
+	return b;
+}
+
+void DisplayPortMainLinkDecoder::Refresh(
+	[[maybe_unused]] vk::raii::CommandBuffer& cmdBuf,
+	[[maybe_unused]] shared_ptr<QueueHandle> queue)
+{
+	#ifdef HAVE_NVTX
+		nvtx3::scoped_range nrange("DisplayPortMainLinkDecoder::Refresh");
+	#endif
+
+	auto data = dynamic_cast<IBM8b10bWaveform*>(GetInputWaveform(0));
+
+	//Make sure we've got valid inputs
+	ClearMessages();
+	ClearPackets();
+	if(!data)
+	{
+		AddErrorMessage("Missing inputs", "No waveform available at input");
+		SetData(nullptr, 0);
+		return;
+	}
+	data->PrepareForCpuAccess();
+
+	//Create output waveform
+	auto cap = SetupEmptyWaveform<DPMainLinkWaveform>(data, 0);
+	cap->PrepareForCpuAccess();
+	cap->MarkModifiedFromCpu();
+
+	//Handle the actual decoding
+	//TODO: multi lane support
+	size_t len = data->size();
+	bool scramblerLocked = false;
+	bool frameLocked = false;
+	uint16_t scrambleState = 1;
+	int64_t tDesync = data->m_offsets[0];
+
+	Unit fs(Unit::UNIT_FS);
+
+	VideoScanlinePacket* pack = nullptr;
+
+	//Partially decoded pixel
+	uint8_t pixelPhase = 0;
+	size_t iPixelStart = 0;
+	uint8_t pixelR = 0;
+	uint8_t pixelG = 0;
+	uint8_t pixelB = 0;
+
+	for(size_t i=0; i<len; i++)
+	{
+		auto sym = data->m_samples[i];
+
+		auto tbase = data->m_offsets[i];
+		auto tbend = tbase + data->m_durations[i];
+		auto tstart = (data->m_timescale * tbase) + data->m_triggerPhase;
+
+		//Scrambler advances on all symbols even K characters
+		uint8_t scram = 0;
+		if(scramblerLocked)
+			scram = RunScrambler(scrambleState);
+
+		//Descramble it, if applicable
+		uint8_t descrambled = sym.m_data ^ scram;
+
+		//Look for control characters
+		bool isControl = (sym.m_flags & IBM8b10bSymbol::FLAG_CONTROL) == IBM8b10bSymbol::FLAG_CONTROL;
+
+		//Handle data characters in scanline body
+		//For now, assume pixels are in groups of 3 at RGB24 color depth
+		//TODO: implement other color depths
+		//Note: RGB triplets can be broken up at byte boundaries with rate-matching filler blocks
+		if(scramblerLocked && frameLocked && !isControl)
+		{
+			//See what index within the pixel we are
+			switch(pixelPhase)
+			{
+				//Start of a pixel, R component
+				case 0:
+					pixelPhase = 1;
+					iPixelStart = i;
+					pixelR = descrambled;
+					break;
+
+				//Middle of a pixel, G component
+				case 1:
+					pixelPhase = 2;
+					pixelG = descrambled;
+
+					//If the pixel did not start one sample ago, update the start to our position
+					if(iPixelStart < (i-1) )
+						iPixelStart = i;
+
+					break;
+
+				//End of a pixel, B component
+				case 2:
+				default:
+					pixelB = descrambled;
+					pixelPhase = 0;
+
+					//If the pixel did not start one or two samples ago, update the start to our position
+					if(iPixelStart < (i-2) )
+						iPixelStart = i;
+
+					//Append to the packet
+					if(pack)
+					{
+						pack->m_data.push_back(pixelR);
+						pack->m_data.push_back(pixelG);
+						pack->m_data.push_back(pixelB);
+						pack->m_len = (tbend * data->m_timescale) + data->m_triggerPhase - pack->m_offset;
+					}
+
+					cap->m_offsets.push_back(data->m_offsets[iPixelStart]);
+					cap->m_durations.push_back(tbend - data->m_offsets[iPixelStart]);
+					cap->m_samples.push_back(DPMainLinkDataSymbol(
+						DPMainLinkDataSymbol::TYPE_PIXEL_DATA,
+						(pixelR << 16) | (pixelG << 8) | pixelB));
+
+					break;
+			}
+		}
+
+		else if(isControl)
+		{
+			//K28.0 is start of a scrambler reset which behaves the same as a blanking start
+			if(sym.m_data == 0x1c)
+			{
+				//Expect SR BF BF SR = K28.0 K28.3 K28.3 K28.0 = 1c 7c 7c 1c
+				if(i+3 >= len)
+					continue;
+				if(
+					((data->m_samples[i+1].m_flags & IBM8b10bSymbol::FLAG_CONTROL) != IBM8b10bSymbol::FLAG_CONTROL) ||
+					(data->m_samples[i+1].m_data != 0x7c) ||
+					((data->m_samples[i+2].m_flags & IBM8b10bSymbol::FLAG_CONTROL) != IBM8b10bSymbol::FLAG_CONTROL) ||
+					(data->m_samples[i+2].m_data != 0x7c) ||
+					((data->m_samples[i+3].m_flags & IBM8b10bSymbol::FLAG_CONTROL) != IBM8b10bSymbol::FLAG_CONTROL) ||
+					(data->m_samples[i+3].m_data != 0x1c)
+					)
+				{
+					continue;
+				}
+
+				LogTrace("Found SR at %s\n", fs.PrettyPrint(tstart).c_str());
+				LogIndenter li;
+
+				//Add scrambler-reset symbol
+				cap->m_offsets.push_back(tbase);
+				cap->m_durations.push_back(data->m_offsets[i+3] + data->m_durations[i+3] - tbase);
+				cap->m_samples.push_back(DPMainLinkDataSymbol(DPMainLinkDataSymbol::TYPE_SR));
+
+				//Skip the SR symbol
+				i ++;
+
+				scrambleState = 0xffff;
+				scramblerLocked = true;
+
+				//Advance scrambler and skip the next 3 symbols (BF BF SR) without decoding them
+				i += 2;
+
+				//Find end of blanking period (k27.7 = BE)
+				size_t iend = 0;
+				for(size_t j=i+1; j<len; j++)
+				{
+					auto jsym = data->m_samples[j];
+					if(
+						((jsym.m_flags & IBM8b10bSymbol::FLAG_CONTROL) == IBM8b10bSymbol::FLAG_CONTROL) &&
+						(jsym.m_data == 0xfb )
+						)
+					{
+						iend = j;
+						break;
+					}
+				}
+
+				if(iend > 0)
+				{
+					//Run scrambler for blanking data
+					//TODO: decode the blanking interval data
+					size_t nblank = iend - i;
+					LogTrace("SR blanking period ends at %s (%zu symbols)\n", fs.PrettyPrint(tstart).c_str(), nblank);
+
+					for(size_t j=0; j<nblank; j++)
+					{
+						/*auto d = */RunScrambler(scrambleState);
+						/*
+						auto b = data->m_samples[i+j+1].m_data;
+						auto s = b ^ d;
+						if(j < 16)
+							LogTrace("%02x, %02x, %02x\n", b, d, s);
+						*/
+					}
+					i += nblank;
+				}
+				else
+					LogWarning("iend invalid\n");
+
+				//Start a new video scanline
+				if(pack)
+					pack->m_headers["Pixels"] = to_string(pack->m_data.size() / 3);
+				pack = new VideoScanlinePacket;
+				pack->m_offset = data->m_offsets[i] * data->m_timescale + data->m_triggerPhase;
+				m_packets.push_back(pack);
+			}
+
+			//BS (start of blanking period)
+			//BS BF BF BS = K28.5 K28.3 K28.3 K28.5 = bc 7c 7c bc
+			else if(sym.m_data == 0xbc)
+			{
+				if(!scramblerLocked)
+					continue;
+
+				//If framing isn't locked, add a filler symbol
+				if(!frameLocked)
+				{
+					//scrambler locked implies we have something in the capture already
+					//so no check needed
+					auto nend = cap->m_offsets.size() - 1;
+					auto tend = cap->m_offsets[nend] + cap->m_durations[nend];
+
+					cap->m_offsets.push_back(tend);
+					cap->m_durations.push_back(tbase - tend);
+					cap->m_samples.push_back(DPMainLinkDataSymbol(DPMainLinkDataSymbol::TYPE_FRAME_DESYNC));
+				}
+
+				//TODO: verify next 3 symbols are BF BF BS
+
+				LogTrace("Found blanking period start at %s\n", fs.PrettyPrint(tstart).c_str());
+				LogIndenter li;
+
+				frameLocked = true;
+
+				//Add blanking-start symbol
+				cap->m_offsets.push_back(tbase);
+				cap->m_durations.push_back(data->m_offsets[i+3] + data->m_durations[i+3] - tbase);
+				cap->m_samples.push_back(DPMainLinkDataSymbol(DPMainLinkDataSymbol::TYPE_BS));
+
+				//Advance scrambler and skip the next 3 symbols (BF BF BS) without decoding them
+				for(size_t j=0; j<3; j++)
+					RunScrambler(scrambleState);
+				i += 3;
+
+				//Find end of blanking period (k27.7 = BE)
+				size_t iend = 0;
+				for(size_t j=i+1; j<len; j++)
+				{
+					auto jsym = data->m_samples[j];
+					if(
+						((jsym.m_flags & IBM8b10bSymbol::FLAG_CONTROL) == IBM8b10bSymbol::FLAG_CONTROL) &&
+						(jsym.m_data == 0xfb )
+						)
+					{
+						iend = j;
+						break;
+					}
+				}
+
+				if(iend > 0)
+				{
+					//Run scrambler for blanking data
+					//TODO: decode the blanking interval data
+					size_t nblank = iend - i;
+					LogTrace("Blanking period ends at %s (%zu symbols)\n", fs.PrettyPrint(tstart).c_str(), nblank);
+
+					for(size_t j=0; j<nblank; j++)
+					{
+						/*auto d = */RunScrambler(scrambleState);
+						/*
+						auto b = data->m_samples[i+j+1].m_data;
+						auto s = b ^ d;
+						if(j < 16)
+							LogTrace("%02x, %02x, %02x\n", b, d, s);
+						*/
+					}
+					i += nblank;
+				}
+				else
+					LogWarning("iend invalid\n");
+
+				//Start a new video scanline
+				if(pack)
+					pack->m_headers["Pixels"] = to_string(pack->m_data.size() / 3);
+				pack = new VideoScanlinePacket;
+				pack->m_offset = data->m_offsets[i] * data->m_timescale + data->m_triggerPhase;
+				m_packets.push_back(pack);
+			}
+
+			//Fill
+			//Expect FS ... FE = K30.7 .... K23.7 = fe .... f7
+			else if(sym.m_data == 0xfe)
+			{
+				//See how many fill characters we have before the FE
+				size_t iFirstFill = i+1;
+				size_t iLastFill = iFirstFill;
+				for(size_t j=iFirstFill; j < len; j++)
+				{
+					auto nsym = data->m_samples[j];
+					if(nsym.m_flags & IBM8b10bSymbol::FLAG_CONTROL)
+					{
+						//TODO: throw error if the end of the fill is not a K23.7
+						break;
+					}
+					else
+						iLastFill = j;
+				}
+				size_t numFillSymbols = iLastFill - iFirstFill + 1;
+
+				//If scrambler was not locked, add a filler symbol
+				if(!scramblerLocked)
+				{
+					cap->m_offsets.push_back(tDesync);
+					cap->m_durations.push_back(tbase - tDesync);
+					cap->m_samples.push_back(DPMainLinkDataSymbol(DPMainLinkDataSymbol::TYPE_SCRAMBLER_DESYNC));
+				}
+
+				//If scrambler was locked, but framing was not, add a filler symbol
+				else if(!frameLocked)
+				{
+					//scrambler locked implies we have something in the capture already
+					//so no check needed
+					auto nend = cap->m_offsets.size() - 1;
+					auto tend = cap->m_offsets[nend] + cap->m_durations[nend];
+
+					cap->m_offsets.push_back(tend);
+					cap->m_durations.push_back(tbase - tend);
+					cap->m_samples.push_back(DPMainLinkDataSymbol(DPMainLinkDataSymbol::TYPE_FRAME_DESYNC));
+				}
+
+				//Add fill symbol to the timeline
+				size_t iFE = iLastFill + 1;
+				if(iFE >= len)
+					iFE = len - 1;
+				cap->m_offsets.push_back(tbase);
+				cap->m_durations.push_back(data->m_offsets[iFE] + data->m_durations[iFE] - tbase);
+				cap->m_samples.push_back(DPMainLinkDataSymbol(DPMainLinkDataSymbol::TYPE_FILL));
+
+				//If we are synchronized, just skip the fill block and move on
+				if(scramblerLocked)
+				{
+					//Skip the FS symbol
+					i++;
+
+					//Verify the fill is in fact zeroes
+					//TODO: try to re-sync if it doesn't decode properly?
+					for(; i < iFE; i++)
+					{
+						auto expected = RunScrambler(scrambleState);
+						auto observed = data->m_samples[i].m_data;
+						if(expected != observed)
+						{
+							//Change fill to an error symbol
+							cap->m_samples[cap->m_samples.size() - 1] =
+								DPMainLinkDataSymbol(DPMainLinkDataSymbol::TYPE_ERROR);
+
+							LogTrace("Couldn't lock to filler, expected %02x got %02x\n", expected, observed);
+							scramblerLocked = false;
+							tDesync = data->m_offsets[iFE] + data->m_durations[iFE];
+							break;
+						}
+					}
+
+					//We are going to have the loop bump i one more time when we advance to the next iteration
+					//in order to skip the FE symbol. So run the scrambler to keep counter and loop index in sync
+					RunScrambler(scrambleState);
+					continue;
+				}
+
+				//Log it
+				LogTrace("Found FS at %s (%zu symbols) with scrambler unlocked\n",
+					fs.PrettyPrint(tstart).c_str(), numFillSymbols);
+				LogIndenter li;
+
+				//We need at least four fill symbols to get and verify a lock
+				if(numFillSymbols < 4)
+				{
+					LogTrace("Not enough filler symbols to lock scrambler to, skipping\n");
+					//for(; i < iFE; i++)
+					//	RunScrambler(scrambleState);
+					continue;
+				}
+
+				//Skip the FS symbol itself, no need to advance scrambler since we aren't synced yet
+				i++;
+
+				//Debug
+				//for(size_t j=0; j<numFillSymbols; j++)
+				//	LogDebug("fill[%zu] = %02x\n", j, data->m_samples[iFirstFill+j].m_data);
+
+				//Scrambled data is XOR'd with the most significant 8 bits in reverse order
+				//So we can bitswap the filler (known a priori to be all zeroes) and use that as the LFSR state
+				scrambleState = 0xffff;
+				scrambleState = (scrambleState & 0xff) | (g_bitswapTable[data->m_samples[iFirstFill+0].m_data] << 8);
+				RunScrambler(scrambleState);
+				scrambleState = (scrambleState & 0xff) | (g_bitswapTable[data->m_samples[iFirstFill+1].m_data] << 8);
+
+				//Skip the first fill symbol because we already ran the scrambler for it
+				i++;
+
+				//Run the scrambler through the filler block and verify we get matching values for every symbol
+				//(this also advances the scrambler for later)
+				scramblerLocked = true;
+				for(; i < iFE; i++)
+				{
+					auto expected = RunScrambler(scrambleState);
+					auto observed = data->m_samples[i].m_data;
+					if(expected != observed)
+					{
+						LogTrace("Couldn't lock to filler, expected %02x got %02x\n", expected, observed);
+						scramblerLocked = false;
+						break;
+					}
+				}
+
+				//We are going to have the loop bump i one more time when we advance to the next iteration
+				//in order to skip the FE symbol. So run the scrambler to keep counter and loop index in sync
+				RunScrambler(scrambleState);
+			}
+		}
+	}
+
+	//If we have at least two packets and the last one is shorter, assume it was truncated by end-of-capture
+	auto npackets = m_packets.size();
+	if(npackets >= 2)
+	{
+		auto prevPacket = m_packets[npackets - 2];
+		auto lastPacket = m_packets[npackets - 1];
+
+		auto prevLen = prevPacket->m_data.size();
+		auto lastLen = lastPacket->m_data.size();
+
+		if( (lastLen < prevLen) && (lastPacket->m_headers.find("Pixels") == lastPacket->m_headers.end() ) )
+		{
+			lastPacket->m_headers["Pixels"] = to_string(lastLen / 3);
+			for(size_t i=lastLen; i < prevLen; i++)
+				lastPacket->m_data.push_back(0x80);
+		}
+	}
+}
+
+string DPMainLinkWaveform::GetColor(size_t i)
+{
+	char tmp[32];
+	const DPMainLinkDataSymbol& s = m_samples[i];
+
+	switch(s.m_type)
+	{
+		case DPMainLinkDataSymbol::TYPE_SCRAMBLER_DESYNC:
+		case DPMainLinkDataSymbol::TYPE_FRAME_DESYNC:
+			return StandardColors::colors[StandardColors::COLOR_PREAMBLE];
+
+		case DPMainLinkDataSymbol::TYPE_BS:
+		case DPMainLinkDataSymbol::TYPE_SR:
+			return StandardColors::colors[StandardColors::COLOR_CONTROL];
+
+		case DPMainLinkDataSymbol::TYPE_FILL:
+			return StandardColors::colors[StandardColors::COLOR_IDLE];
+
+		case DPMainLinkDataSymbol::TYPE_PIXEL_DATA:
+			snprintf(tmp, sizeof(tmp), "#%06x", s.m_data);
+			return tmp;
+
+			//return StandardColors::colors[StandardColors::COLOR_DATA];
+
+		case DPMainLinkDataSymbol::TYPE_ERROR:
+		default:
+			return StandardColors::colors[StandardColors::COLOR_ERROR];
+	}
+}
+
+string DPMainLinkWaveform::GetText(size_t i)
+{
+	char tmp[32];
+	const DPMainLinkDataSymbol& s = m_samples[i];
+
+	switch(s.m_type)
+	{
+		case DPMainLinkDataSymbol::TYPE_SCRAMBLER_DESYNC:
+			return "(scrambler desynced)";
+
+		case DPMainLinkDataSymbol::TYPE_FRAME_DESYNC:
+			return "(framing desynced)";
+
+		case DPMainLinkDataSymbol::TYPE_FILL:
+			return "(filler)";
+
+		case DPMainLinkDataSymbol::TYPE_BS:
+			return "Blanking Start";
+
+		case DPMainLinkDataSymbol::TYPE_SR:
+			return "Scrambler Reset";
+
+		case DPMainLinkDataSymbol::TYPE_PIXEL_DATA:
+			snprintf(tmp, sizeof(tmp), "#%06x", s.m_data);
+			return tmp;
+
+		case DPMainLinkDataSymbol::TYPE_ERROR:
+		default:
+			return "ERROR";
+	}
+}
+

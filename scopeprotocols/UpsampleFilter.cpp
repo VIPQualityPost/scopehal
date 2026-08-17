@@ -90,7 +90,15 @@ string UpsampleFilter::GetProtocolName()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Actual decoder logic
 
-void UpsampleFilter::Refresh(vk::raii::CommandBuffer& cmdBuf, shared_ptr<QueueHandle> queue)
+uint32_t UpsampleFilter::GetExecutionCapabilitiesMask()
+{
+ 	return
+		(uint32_t)ExecutionCapabilities::CommandBufferAppend |
+		(uint32_t)ExecutionCapabilities::CommandBufferTailCall |
+		(uint32_t)ExecutionCapabilities::VulkanOnly;
+}
+
+void UpsampleFilter::Refresh(vk::raii::CommandBuffer& cmdBuf, [[maybe_unused]] shared_ptr<QueueHandle> queue)
 {
 	#ifdef HAVE_NVTX
 		nvtx3::scoped_range nrange("UpsampleFilter::Refresh");
@@ -98,7 +106,7 @@ void UpsampleFilter::Refresh(vk::raii::CommandBuffer& cmdBuf, shared_ptr<QueueHa
 
 	//Get the input data
 	//Current resampling implementation assumes input is uniform, fail if it's not
-	ClearErrors();
+	ClearMessages();
 	auto din = dynamic_cast<UniformAnalogWaveform*>(GetInputWaveform(0));
 	if(!din)
 	{
@@ -146,26 +154,26 @@ void UpsampleFilter::Refresh(vk::raii::CommandBuffer& cmdBuf, shared_ptr<QueueHa
 	size_t outlen = imax*upsample_factor;
 	cap->Resize(outlen);
 
-	cmdBuf.begin({});
+	{
+		NamedDebugRange debugRange(cmdBuf, "UpsampleFilter");
 
-	//Update our descriptor sets with current buffers
-	m_computePipeline.BindBufferNonblocking(0, din->m_samples, cmdBuf);
-	m_computePipeline.BindBufferNonblocking(1, m_filter, cmdBuf);
-	m_computePipeline.BindBufferNonblocking(2, cap->m_samples, cmdBuf, true);
+		//Update our descriptor sets with current buffers
+		m_computePipeline.BindBufferNonblocking(0, din->m_samples, cmdBuf);
+		m_computePipeline.BindBufferNonblocking(1, m_filter, cmdBuf);
+		m_computePipeline.BindBufferNonblocking(2, cap->m_samples, cmdBuf, true);
 
-	UpsampleFilterArgs args;
-	args.imax = imax;
-	args.upsample_factor = upsample_factor;
-	args.kernel = kernel;
+		UpsampleFilterArgs args;
+		args.imax = imax;
+		args.upsample_factor = upsample_factor;
+		args.kernel = kernel;
 
-	const uint32_t compute_block_count = GetComputeBlockCount(len, 64);
-	m_computePipeline.Dispatch(cmdBuf, args,
-		upsample_factor,
-		min(compute_block_count, 32768u),
-		compute_block_count / 32768 + 1);
+		const uint32_t compute_block_count = GetComputeBlockCount(len, 64);
+		m_computePipeline.Dispatch(cmdBuf, args,
+			upsample_factor,
+			min(compute_block_count, 32768u),
+			compute_block_count / 32768 + 1);
+	}
 
-	//Done, submit to the queue and wait
-	cmdBuf.end();
-	queue->SubmitAndBlock(cmdBuf);
+	//Done
 	cap->MarkModifiedFromGpu();
 }

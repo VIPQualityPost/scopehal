@@ -42,10 +42,8 @@
 #include "HP662xAPowerSupply.h"
 #include "AntikernelLabsGPIO.h"
 #include "AntikernelLabsILA.h"
-#include "AntikernelLabsOscilloscope.h"
 #include "AntikernelLabsSerdesILA8b10b.h"
 #include "AntikernelLabsVIO.h"
-#include "AntikernelLogicAnalyzer.h"
 #include "DemoOscilloscope.h"
 #include "DemoPowerSupply.h"
 #include "DigilentOscilloscope.h"
@@ -308,10 +306,8 @@ void DriverStaticInit()
 	AddBERTDriverClass(MultiLaneBERT);
 
 	AddDriverClass(AgilentOscilloscope);
-	AddDriverClass(AntikernelLabsOscilloscope);
 	AddDriverClass(AntikernelLabsILA);
 	AddDriverClass(AntikernelLabsSerdesILA8b10b);
-	//AddDriverClass(AntikernelLogicAnalyzer);
 	AddDriverClass(DemoOscilloscope);
 	AddDriverClass(DigilentOscilloscope);
 	AddDriverClass(DSLabsOscilloscope);
@@ -1109,7 +1105,7 @@ void CreateDirectory(const string& path)
 #endif
 
 /**
-	@brief Calculates a CRC32 checksum using the standard Ethernet polynomial
+	@brief Calculates a CRC32 checksum in network byte order using the standard Ethernet polynomial
  */
 uint32_t CRC32(const uint8_t* bytes, size_t start, size_t end)
 {

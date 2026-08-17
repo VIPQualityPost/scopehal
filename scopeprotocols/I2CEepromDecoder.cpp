@@ -111,7 +111,7 @@ void I2CEepromDecoder::Refresh(
 	ClearPackets();
 
 	//Make sure we've got valid inputs
-	ClearErrors();
+	ClearMessages();
 	auto din = dynamic_cast<I2CWaveform*>(GetInputWaveform(0));
 	if(!din)
 	{
@@ -219,7 +219,11 @@ void I2CEepromDecoder::Refresh(
 						cap->m_samples.push_back(I2CEepromSymbol(I2CEepromSymbol::TYPE_SELECT_READ, 0));
 						tstart = end;
 
-						state = 4;
+						state = 7;
+
+						pack->m_headers["Type"] = "Read";
+						pack->m_headers["Address"] = "";
+						pack->m_displayBackgroundColor = m_backgroundColors[PROTO_COLOR_DATA_READ];
 					}
 
 					//Expect ACK/NAK then move on
