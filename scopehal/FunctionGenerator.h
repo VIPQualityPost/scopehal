@@ -292,6 +292,33 @@ public:
 	virtual void SetFunctionChannelOutputImpedance(int chan, OutputImpedance z);
 
 	/**
+		@brief Determines if the function generator allows control over waveform phase
+
+		If this function returns false, GetFunctionChannelPhase() will always return 0, and
+		SetFunctionChannelPhase() is a no-op.
+
+		@param	chan	Channel index
+		@return			True if phase control is available, false if unavailable
+	 */
+	virtual bool HasFunctionPhaseControls(int chan);
+
+	/**
+		@brief Gets the phase of the waveform for a function generator output (if supported)
+
+		@param 	chan	Channel index
+		@return			Phase, in degrees
+	 */
+	virtual float GetFunctionChannelPhase(int chan);
+
+	/**
+		@brief Sets the phase of the waveform for a function generator output (if supported)
+
+		@param 	chan	Channel index
+		@param	deg		Phase, in degrees
+	 */
+	virtual void SetFunctionChannelPhase(int chan, float deg);
+
+	/**
 		@brief Query the set of available pre-defined waveforms for this generator
 
 		@param chan		Channel index

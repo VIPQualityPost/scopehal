@@ -360,6 +360,20 @@ void FunctionGenerator::SetFunctionChannelOutputImpedance(int /*chan*/, OutputIm
 {
 }
 
+bool FunctionGenerator::HasFunctionPhaseControls(int /*chan*/)
+{
+	return false;
+}
+
+float FunctionGenerator::GetFunctionChannelPhase(int /*chan*/)
+{
+	return 0;
+}
+
+void FunctionGenerator::SetFunctionChannelPhase(int /*chan*/, float /*deg*/)
+{
+}
+
 bool FunctionGenerator::AcquireData()
 {
 	//no-op for now
@@ -454,6 +468,9 @@ void FunctionGenerator::DoSerializeConfiguration(YAML::Node& node, IDTable& tabl
 
 		if(HasFunctionImpedanceControls(i))
 			channelNode["impedance"] = GetNameOfImpedance(GetFunctionChannelOutputImpedance(i));
+
+		if(HasFunctionPhaseControls(i))
+			channelNode["phase"] = GetFunctionChannelPhase(i);
 	}
 }
 
@@ -586,6 +603,9 @@ void FunctionGenerator::DoLoadConfiguration(
 
 		if(HasFunctionImpedanceControls(i))
 			SetFunctionChannelOutputImpedance(i, GetImpedanceOfName(channelNode["impedance"].as<string>()));
+
+		if(HasFunctionPhaseControls(i) && channelNode["phase"])
+			SetFunctionChannelPhase(i, channelNode["phase"].as<float>());
 
 		SetFunctionChannelActive(i, channelNode["enabled"].as<bool>());
 	}

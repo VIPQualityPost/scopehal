@@ -88,6 +88,10 @@ public:
 	virtual OutputImpedance GetFunctionChannelOutputImpedance(int chan) override;
 	virtual void SetFunctionChannelOutputImpedance(int chan, OutputImpedance z) override;
 
+	virtual bool HasFunctionPhaseControls(int chan) override;
+	virtual float GetFunctionChannelPhase(int chan) override;
+	virtual void SetFunctionChannelPhase(int chan, float deg) override;
+
 public:
 	static std::string GetDriverNameInternal();
 	GENERATOR_INITPROC(SiglentFunctionGenerator)
@@ -173,6 +177,9 @@ protected:
 	bool m_cachedFallTimeValid[2];
 	float m_cachedFallTime[2];
 
+	bool m_cachedPhaseValid[2];
+	float m_cachedPhase[2];
+
 	bool m_cachedCombine[2];
 	bool m_cachedCombineValid[2];
 
@@ -181,6 +188,17 @@ protected:
 	std::chrono::steady_clock::time_point m_lastCombinePoll[2];
 
 	bool m_supportsCHDR;
+
+	//True once MODE PHASELOCKED has been sent, so relative phase offset between
+	//the two channels takes effect. Set lazily on first phase write.
+	bool m_phaseLockedSet = false;
+
+	//Marks every cached parameter of a channel invalid so the next read goes out
+	//to the instrument. Setters call this after queuing a write: the instrument
+	//may clamp, quantize, or reject the requested value (e.g. the SDG2042X caps
+	//square wave frequency at 25 MHz while sine allows 40 MHz), so the cached
+	//state must reflect what the instrument actually did, not what we asked for.
+	void InvalidateChannelCache(size_t chan);
 
 	std::string RemoveHeader(const std::string& str);
 

@@ -199,6 +199,9 @@ void SiglentFunctionGenerator::FlushConfigCache()
 		m_cachedFallTime[i] = 0;
 		m_cachedFallTimeValid[i] = false;
 
+		m_cachedPhase[i] = 0;
+		m_cachedPhaseValid[i] = false;
+
 		m_cachedCombine[i] = false;
 		m_cachedCombineValid[i] = false;
 	}
@@ -208,6 +211,20 @@ string SiglentFunctionGenerator::RemoveHeader(const string& str)
 {
 	auto pos = str.find(' ');
 	return Trim(str.substr(pos + 1));
+}
+
+void SiglentFunctionGenerator::InvalidateChannelCache(size_t chan)
+{
+	m_cachedEnableStateValid[chan] = false;
+	m_cachedFrequencyValid[chan] = false;
+	m_cachedAmplitudeValid[chan] = false;
+	m_cachedOffsetValid[chan] = false;
+	m_cachedImpedanceValid[chan] = false;
+	m_cachedWaveShapeValid[chan] = false;
+	m_cachedDutyCycleValid[chan] = false;
+	m_cachedRiseTimeValid[chan] = false;
+	m_cachedFallTimeValid[chan] = false;
+	m_cachedPhaseValid[chan] = false;
 }
 
 /**
@@ -306,6 +323,12 @@ void SiglentFunctionGenerator::ParseBasicWaveform(const string& str, size_t i)
 			m_cachedFallTimeValid[i] = true;
 		}
 
+		if(it.first == "PHSE")
+		{
+			m_cachedPhase[i] = stof(it.second);
+			m_cachedPhaseValid[i] = true;
+		}
+
 		if(it.first == "WVTP")
 		{
 			if(it.second == "SINE")
@@ -396,8 +419,7 @@ void SiglentFunctionGenerator::SetFunctionChannelActive(int chan, bool on)
 	else
 		m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":OUTP OFF");
 
-	m_cachedOutputEnable[chan] = on;
-	m_cachedEnableStateValid[chan] = true;
+	InvalidateChannelCache(chan);
 }
 
 bool SiglentFunctionGenerator::HasFunctionDutyCycleControls(int /*chan*/)
@@ -423,8 +445,7 @@ void SiglentFunctionGenerator::SetFunctionChannelDutyCycle(int chan, float duty)
 	percent = max(0, min(100, percent));
 	m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV DUTY," + to_string(percent));
 
-	m_cachedDutyCycle[chan] = duty;
-	m_cachedDutyCycleValid[chan] = true;
+	InvalidateChannelCache(chan);
 }
 
 float SiglentFunctionGenerator::GetFunctionChannelAmplitude(int chan)
@@ -442,8 +463,7 @@ void SiglentFunctionGenerator::SetFunctionChannelAmplitude(int chan, float ampli
 {
 	m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV AMP," + to_string(amplitude));
 
-	m_cachedAmplitude[chan] = amplitude;
-	m_cachedAmplitudeValid[chan] = true;
+	InvalidateChannelCache(chan);
 }
 
 float SiglentFunctionGenerator::GetFunctionChannelOffset(int chan)
@@ -461,8 +481,7 @@ void SiglentFunctionGenerator::SetFunctionChannelOffset(int chan, float offset)
 {
 	m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV OFST," + to_string(offset));
 
-	m_cachedOffset[chan] = offset;
-	m_cachedOffsetValid[chan] = true;
+	InvalidateChannelCache(chan);
 }
 
 float SiglentFunctionGenerator::GetFunctionChannelFrequency(int chan)
@@ -484,8 +503,7 @@ void SiglentFunctionGenerator::SetFunctionChannelFrequency(int chan, float hz)
 	}
 	m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV FRQ," + to_string(hz));
 
-	m_cachedFrequency[chan] = hz;
-	m_cachedFrequencyValid[chan] = true;
+	InvalidateChannelCache(chan);
 }
 
 FunctionGenerator::WaveShape SiglentFunctionGenerator::GetFunctionChannelShape(int chan)
@@ -503,9 +521,6 @@ FunctionGenerator::WaveShape SiglentFunctionGenerator::GetFunctionChannelShape(i
 
 void SiglentFunctionGenerator::SetFunctionChannelShape(int chan, WaveShape shape)
 {
-	m_cachedWaveShapeValid[chan] = true;
-	m_cachedWaveShape[chan] = shape;
-
 	switch(shape)
 	{
 		case SHAPE_SINE:
@@ -538,10 +553,12 @@ void SiglentFunctionGenerator::SetFunctionChannelShape(int chan, WaveShape shape
 
 		default:
 			LogWarning("[SiglentFunctionGenerator::SetFunctionChannelShape] unrecognized shape %d", shape);
-
-			m_cachedWaveShapeValid[chan] = false;
-			break;
+			return;
 	}
+
+	//The instrument may clamp other parameters when the shape changes (e.g. the
+	//SDG2042X allows 40 MHz sine but only 25 MHz square), so read everything back.
+	InvalidateChannelCache(chan);
 }
 
 bool SiglentFunctionGenerator::HasFunctionRiseFallTimeControls(int chan)
@@ -567,8 +584,7 @@ void SiglentFunctionGenerator::SetFunctionChannelRiseTime(int chan, float fs)
 	float sec = fs * 1e-15f;
 	m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV RISE," + to_string(sec));
 
-	m_cachedRiseTime[chan] = fs;
-	m_cachedRiseTimeValid[chan] = true;
+	InvalidateChannelCache(chan);
 }
 
 float SiglentFunctionGenerator::GetFunctionChannelFallTime(int chan)
@@ -588,8 +604,7 @@ void SiglentFunctionGenerator::SetFunctionChannelFallTime(int chan, float fs)
 	float sec = fs * 1e-15f;
 	m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV FALL," + to_string(sec));
 
-	m_cachedFallTime[chan] = fs;
-	m_cachedFallTimeValid[chan] = true;
+	InvalidateChannelCache(chan);
 }
 
 bool SiglentFunctionGenerator::HasFunctionImpedanceControls(int /*chan*/)
@@ -615,11 +630,46 @@ void SiglentFunctionGenerator::SetFunctionChannelOutputImpedance(int chan, Funct
 	else
 		m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":OUTP LOAD,50");
 
-	m_cachedImpedance[chan] = z;
-	m_cachedImpedanceValid[chan] = true;
-
-	//Impedance is shared across both channels on SDG series
+	//The load setting is shared across both channels on SDG series, and changing
+	//it reinterprets the reported amplitude (the instrument displays the voltage
+	//across the configured load, so Hi-Z <-> 50 ohm halves/doubles AMP). Invalidate
+	//both channels so the next read reflects what the instrument actually did.
 	size_t other = (chan == 0) ? 1 : 0;
-	m_cachedImpedance[other] = z;
-	m_cachedImpedanceValid[other] = true;
+	InvalidateChannelCache(chan);
+	InvalidateChannelCache(other);
+}
+
+bool SiglentFunctionGenerator::HasFunctionPhaseControls(int /*chan*/)
+{
+	//PHSE is a basic waveform parameter on all SDG series that support BSWV
+	return true;
+}
+
+float SiglentFunctionGenerator::GetFunctionChannelPhase(int chan)
+{
+	if(m_cachedPhaseValid[chan])
+		return m_cachedPhase[chan];
+
+	//Fetch BSWV which also populates PHSE
+	auto reply = RemoveHeader(m_transport->SendCommandQueuedWithReply(m_channels[chan]->GetHwname() + ":BSWV?"));
+	ParseBasicWaveform(reply, chan);
+
+	return m_cachedPhase[chan];
+}
+
+void SiglentFunctionGenerator::SetFunctionChannelPhase(int chan, float deg)
+{
+	//Phase offset between the two channels only takes effect when the outputs
+	//are phase-locked; put the instrument in phase-locked mode on first use.
+	if(!m_phaseLockedSet)
+	{
+		m_transport->SendCommandQueued("MODE PHASELOCKED");
+		m_phaseLockedSet = true;
+	}
+
+	//Manual: PHSE is 0-360 degrees
+	deg = max(0.0f, min(360.0f, deg));
+	m_transport->SendCommandQueued(m_channels[chan]->GetHwname() + ":BSWV PHSE," + to_string(deg));
+
+	InvalidateChannelCache(chan);
 }
