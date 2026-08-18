@@ -79,13 +79,35 @@ TektronixMDOOscilloscope::TektronixMDOOscilloscope(SCPITransport* transport)
 	//do. The MDO4000C series only has the spectrum analyzer with option SA3 or SA6
 	//installed; option-less C models have an Aux In connector instead, and the RF
 	//input replaces the Aux In connector, so on C models their presence is
-	//complementary (CONFIG:AUXIN? per the programmer manual).
+	//complementary.
+	//MDO models can also encode the RF end in the model suffix: -0 = no RF,
+	//-3 = 3 GHz RF, -6 = 6 GHz RF (e.g. MDO4104-0 has no RF front end). A numeric
+	//suffix is authoritative; otherwise fall back to the family defaults below and,
+	//for C models, disambiguate with CONFIG:AUXIN? (per the programmer manual).
 	m_hasRF = false;
 	if(m_model.find("MDO") == 0)
 	{
+		//MDO models without a numeric suffix always have RF (MDO4000/B, MDO3000)
 		m_hasRF = true;
+		bool rf_suffix_seen = false;
 
-		if((m_model.find("MDO4") == 0) && (m_model.find('C') != string::npos))
+		auto dashpos = m_model.find('-');
+		if((dashpos != string::npos) && (dashpos + 1 < m_model.size()))
+		{
+			char rfcode = m_model[dashpos + 1];
+			if((rfcode >= '0') && (rfcode <= '9'))
+			{
+				rf_suffix_seen = true;
+				m_hasRF = (rfcode != '0');
+				LogDebug("MDO: model RF suffix -%c, spectrum analyzer %s\n",
+					rfcode, m_hasRF ? "present" : "absent");
+			}
+		}
+
+		//C models without SA3/SA6 (no RF) have an Aux In connector; if the suffix
+		//did not already say, ask the instrument which is fitted
+		if(!rf_suffix_seen && m_hasRF &&
+			(m_model.find("MDO4") == 0) && (m_model.find('C') != string::npos))
 		{
 			try
 			{
@@ -1234,13 +1256,17 @@ uint64_t TektronixMDOOscilloscope::GetSampleDepth()
 void TektronixMDOOscilloscope::SetSampleDepth(uint64_t depth)
 {
 	lock_guard<recursive_mutex> lock(m_cacheMutex);
-	m_sampleDepth = depth;
-	m_sampleDepthValid = true;
-	m_sampleRateValid = false;	//Changing depth affects sample rate
-
 	m_transport->SendCommandQueued(string("HOR:RECO ") + to_string(depth));
 	m_transport->SendCommandQueued("DAT:START 1");
 	m_transport->SendCommandQueued(string("DAT:STOP ") + to_string(depth));
+
+	//Don't trust the requested depth: the scope coerces unsupported record lengths
+	//to the nearest supported value. Changing the record length at a fixed time/div
+	//also changes the sample rate (rate = depth / (time_per_div * 10)). Invalidate
+	//both caches so the next read reports what the scope actually adopted instead of
+	//forcing the previous rate back onto it.
+	m_sampleDepthValid = false;
+	m_sampleRateValid = false;
 }
 
 void TektronixMDOOscilloscope::SetSampleRate(uint64_t rate)
@@ -1250,21 +1276,33 @@ void TektronixMDOOscilloscope::SetSampleRate(uint64_t rate)
 	//Find an exact (record length, time/div) pair from the supported record lengths
 	//and the 1-2-5 time/div steps and set both. If the requested rate is not exactly
 	//reachable (e.g. it is the current coerced rate and falls off the grid), choose
-	//the pair whose achieved rate is closest to the request; the caches are
-	//invalidated so the readback shows the value the scope actually adopted.
+	//the pair whose achieved rate is closest to the request.
+	//When several pairs tie, prefer the largest record length: all of them realize
+	//the requested rate, and more memory means a longer capture (a 1 kS/s request
+	//must not collapse to a 1k-point, 1-second window when the scope has 10M+).
+	//Pairs whose rate exceeds the ADC capability are skipped, matching the set of
+	//rates offered by GetSampleRatesNonInterleaved().
+	//The caches are invalidated so the readback shows the values the scope actually
+	//adopted.
 	uint64_t best_depth = 0;
 	double best_scale = 0;
 	int64_t best_delta = INT64_MAX;
+	const uint64_t max_rate = GetMaxAnalogSampleRate();
 
 	for(auto depth : GetSupportedSampleDepths())
 	{
 		for(double scale : GetTimebaseScales())
 		{
 			uint64_t achieved = static_cast<uint64_t>(round(depth / (scale * 10.0)));
+			if(achieved > max_rate)
+				continue;	//the ADC cannot sample this fast
+
 			int64_t delta = static_cast<int64_t>(achieved) - static_cast<int64_t>(rate);
 			if(delta < 0)
 				delta = -delta;
-			if(delta < best_delta)
+
+			//Keep the closest pair; on ties prefer a longer record (more memory)
+			if((delta < best_delta) || ((delta == best_delta) && (depth > best_depth)))
 			{
 				best_delta = delta;
 				best_depth = depth;
@@ -1642,31 +1680,12 @@ uint64_t TektronixMDOOscilloscope::GetMaxAnalogSampleRate()
 	if(m_maxSampleRateValid)
 		return m_maxSampleRate;
 
-	//CONFIG:ANALO:MAXSAMPLER? is documented for this family in the programmer manual
-	try
-	{
-		//Reject empty/garbage (stod throws) and non-positive replies; converting a
-		//negative value to uint64_t would be undefined behavior and poison the cull
-		double max_rate = round(
-			stod(m_transport->SendCommandQueuedWithReply("CONFIG:ANALO:MAXSAMPLER?")));
-		if(max_rate > 0)
-		{
-			m_maxSampleRate = static_cast<uint64_t>(max_rate);
-			m_maxSampleRateValid = true;
-			return m_maxSampleRate;
-		}
-		LogWarning("MDO: CONFIG:ANALO:MAXSAMPLER? returned an invalid rate, assuming 2.5 GS/s\n");
-	}
-	catch(const exception& e)
-	{
-		//Fall back to the maximum documented for the MDO4000B family. MSO/DPO4104B
-		//models are capable of 5 GS/s, but under-listing rates is safer than offering
-		//ones the ADC cannot achieve; the UI reads back the actual rate anyway.
-		LogWarning(
-			"MDO: CONFIG:ANALO:MAXSAMPLER? failed (%s), assuming 2.5 GS/s\n",
-			e.what());
-	}
-	m_maxSampleRate = 2500000000ULL;
+	//The maximum sample rate is fixed per model family and is encoded in the model
+	//name: <family>4<bandwidth x2><channels>, e.g. MDO4104, MSO4054B. 1 GHz models
+	//(bandwidth code "10") sample at up to 5 GS/s; all others at 2.5 GS/s. No
+	//CONFIG query or fallback is needed.
+	m_maxSampleRate = ((m_model.size() >= 6) && (m_model.substr(4, 2) == "10")) ?
+		5000000000ULL : 2500000000ULL;
 	m_maxSampleRateValid = true;
 	return m_maxSampleRate;
 }
@@ -1694,34 +1713,38 @@ vector<double> TektronixMDOOscilloscope::GetTimebaseScales()
 
 vector<uint64_t> TektronixMDOOscilloscope::GetSampleRatesNonInterleaved()
 {
-	//HOR:SAMPLER is query-only on this family (the manual says the command form is
-	//ignored), so the sample rate can only be changed via the record length and
-	//time/div:  sample rate = record length / (time per division * 10 divisions).
-	//Enumerate every rate reachable as a supported record length times a 1-2-5
-	//time/div step, culled to the instrument's maximum analog sample rate.
-	//SetSampleRate() looks up the exact (record length, time/div) pair that realizes
-	//any rate in this list, so every offered rate is settable. The current rate is
-	//included even if it is off the 1-2-5 grid so the picker always matches the live
-	//state; requesting it falls back to the closest reachable pair.
+	//Verified against the instrument: the sample-rate ladder is 1-2-5 steps
+	//(1, 2, 5 times a power of ten) from 100 S/s up to 100 MS/s, then
+	//250 MS/s, 500 MS/s, 1.25 GS/s, 2.5 GS/s (model-dependent above the
+	//1-2-5 range; the top of the ladder is the model maximum reported by
+	//CONFIG:ANALO:MAXSAMPLER?). HOR:SAMPLER is query-only on this family, so
+	//the ladder is generated here rather than enumerated from the scope, and
+	//the current rate is included in case it falls off the ladder (e.g. after
+	//a record-length change); requesting it falls back to the nearest step.
 
 	set<uint64_t> rates;
 
 	rates.insert(GetSampleRate());
 
 	const uint64_t max_rate = GetMaxAnalogSampleRate();
-	for(auto depth : GetSampleDepthsNonInterleaved())
+
+	//1-2-5 steps, 100 S/s .. 50 MS/s
+	for(uint64_t decade = 100; decade <= (int)100e6; decade *= 10)
 	{
-		for(double scale : GetTimebaseScales())
-		{
-			uint64_t rate = static_cast<uint64_t>(round(depth / (scale * 10.0)));
-
-			//Skip rates the ADC cannot achieve and sub-100 S/s rates of no practical use
-			if((rate > max_rate) || (rate < 100))
-				continue;
-
-			rates.insert(rate);
-		}
+		for(uint64_t coeff : {1ULL, 2ULL, 5ULL})
+			rates.insert(coeff * decade);
 	}
+
+	//100 MS/s, then the rates above the 1-2-5 range, all model-dependent
+	for(uint64_t step : {100000000ULL, 250000000ULL, 500000000ULL,
+	                     1250000000ULL, 2500000000ULL})
+	{
+		if(step <= max_rate)
+			rates.insert(step);
+	}
+
+	//Top of the ladder is always the model's maximum sample rate
+	rates.insert(max_rate);
 
 	return vector<uint64_t>(rates.begin(), rates.end());
 }

@@ -160,7 +160,8 @@ protected:
 	///@brief Parse a WFMOutpre? response into a preamble struct
 	bool ReadWFMOutprePreamble(const std::string& preamble_in, struct mdo4k_preamble& preamble_out);
 
-	///@brief Query and cache the maximum analog sample rate (CONFIG:ANALO:MAXSAMPLER?)
+	///@brief Cached maximum analog sample rate, derived from the model name
+	///(1 GHz models: 5 GS/s, all others: 2.5 GS/s)
 	uint64_t GetMaxAnalogSampleRate();
 
 	///@brief Cached value and validity flag for GetMaxAnalogSampleRate()
