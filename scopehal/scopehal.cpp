@@ -62,7 +62,7 @@
 #include "SiglentSCPIOscilloscope.h"
 #include "TektronixOscilloscope.h"
 #include "TektronixHSIOscilloscope.h"
-#include "TektronixMDO4000BOscilloscope.h"
+#include "TektronixMDOOscilloscope.h"
 #include "ThunderScopeOscilloscope.h"
 #include "HaasoscopePro.h"
 #include "TinySA.h"
@@ -325,7 +325,7 @@ void DriverStaticInit()
 	AddDriverClass(SiglentSCPIOscilloscope);
 	AddDriverClass(TektronixOscilloscope);
 	AddDriverClass(TektronixHSIOscilloscope);
-	AddDriverClass(TektronixMDO4000BOscilloscope);
+	AddDriverClass(TektronixMDOOscilloscope);
 	AddDriverClass(ThunderScopeOscilloscope);
 	AddDriverClass(TinySA);
 #ifdef __linux

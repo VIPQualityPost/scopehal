@@ -30,13 +30,13 @@
 /**
 	@file
 	@author Andrew D. Zonenberg
-	@brief Implementation of TektronixMDO4000BOscilloscope
+	@brief Implementation of TektronixMDOOscilloscope
 
 	@ingroup scopedrivers
  */
 
 #include "scopehal.h"
-#include "TektronixMDO4000BOscilloscope.h"
+#include "TektronixMDOOscilloscope.h"
 #include "EdgeTrigger.h"
 #include "PulseWidthTrigger.h"
 #include "DropoutTrigger.h"
@@ -55,7 +55,7 @@ using namespace std;
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Construction / destruction
 
-TektronixMDO4000BOscilloscope::TektronixMDO4000BOscilloscope(SCPITransport* transport)
+TektronixMDOOscilloscope::TektronixMDOOscilloscope(SCPITransport* transport)
 	: SCPIDevice(transport)
 	, SCPIInstrument(transport)
 	, TektronixOscilloscope(transport)
@@ -94,10 +94,42 @@ TektronixMDO4000BOscilloscope::TektronixMDO4000BOscilloscope(SCPITransport* tran
 			catch(const exception& e)
 			{
 				//Assume RF is present, preserving the previous behavior for MDO models
-				LogWarning("MDO4000B: CONFIG:AUXIN? failed (%s), assuming RF is present\n",
+				LogWarning("MDO: CONFIG:AUXIN? failed (%s), assuming RF is present\n",
 					e.what());
 			}
 		}
+	}
+
+	//Determine whether the Aux In connector is present and usable as an external
+	//trigger input. Per the programmer manual only MSO/DPO4000B series models,
+	//2-channel MDO3000 models, and MDO4000C models without option SA3/SA6 have
+	//it; on MDO4000/B, MDO4000C with SA3/SA6, and 4-channel MDO3000 models the
+	//RF input replaces it, so there is no external trigger input at all.
+	m_hasAuxIn = !m_hasRF;
+	if((m_model.find("MDO3") == 0) && (m_model.size() >= 7) && (m_model[6] == '2'))
+		m_hasAuxIn = true;	//2-channel MDO3000 has both RF and Aux In
+
+	//Configure the Aux Out port to output the A trigger signal. This is the
+	//documented default; set it explicitly so the EXT connector is a trigger
+	//output on models where it cannot be a trigger input.
+	m_transport->SendCommandQueued("AUXOUT:SOURCE ATRIGGER");
+
+	//Create the external trigger input channel for models with an Aux In
+	//connector (the base class created none for the MDO family, see the
+	//FAMILY_MDO4 case in TektronixOscilloscope::TektronixOscilloscope).
+	//Name it AUX to match the SCPI source literal (TRIG:A:EDGE:SOU AUX,
+	//TRIG:A:LEV:AUX).
+	if(!m_extTrigChannel && m_hasAuxIn)
+	{
+		m_extTrigChannel = new OscilloscopeChannel(
+			this,
+			"AUX",
+			"",
+			Unit(Unit::UNIT_FS),
+			Unit(Unit::UNIT_VOLTS),
+			Stream::STREAM_TYPE_TRIGGER,
+			m_channels.size());
+		m_channels.push_back(m_extTrigChannel);
 	}
 
 	//Create RF spectrum channel
@@ -143,22 +175,22 @@ TektronixMDO4000BOscilloscope::TektronixMDO4000BOscilloscope(SCPITransport* tran
 	FlushConfigCache();
 }
 
-TektronixMDO4000BOscilloscope::~TektronixMDO4000BOscilloscope()
+TektronixMDOOscilloscope::~TektronixMDOOscilloscope()
 {
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Accessors
 
-string TektronixMDO4000BOscilloscope::GetDriverNameInternal()
+string TektronixMDOOscilloscope::GetDriverNameInternal()
 {
-	return "tektronix.mdo4000b";
+	return "tektronix.mdo";
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Channel configuration
 
-bool TektronixMDO4000BOscilloscope::IsChannelEnabled(size_t i)
+bool TektronixMDOOscilloscope::IsChannelEnabled(size_t i)
 {
 	auto ochan = GetOscilloscopeChannel(i);
 	if(!ochan)
@@ -212,7 +244,7 @@ bool TektronixMDO4000BOscilloscope::IsChannelEnabled(size_t i)
 	return false;
 }
 
-void TektronixMDO4000BOscilloscope::EnableChannel(size_t i)
+void TektronixMDOOscilloscope::EnableChannel(size_t i)
 {
 	lock_guard<recursive_mutex> lock(m_cacheMutex);
 	m_channelsEnabled[i] = true;
@@ -228,7 +260,7 @@ void TektronixMDO4000BOscilloscope::EnableChannel(size_t i)
 	}
 }
 
-void TektronixMDO4000BOscilloscope::DisableChannel(size_t i)
+void TektronixMDOOscilloscope::DisableChannel(size_t i)
 {
 	lock_guard<recursive_mutex> lock(m_cacheMutex);
 	m_channelsEnabled[i] = false;
@@ -244,7 +276,7 @@ void TektronixMDO4000BOscilloscope::DisableChannel(size_t i)
 	}
 }
 
-OscilloscopeChannel::CouplingType TektronixMDO4000BOscilloscope::GetChannelCoupling(size_t i)
+OscilloscopeChannel::CouplingType TektronixMDOOscilloscope::GetChannelCoupling(size_t i)
 {
 	if(!IsAnalog(i))
 		return OscilloscopeChannel::COUPLE_DC_1M;
@@ -280,7 +312,7 @@ OscilloscopeChannel::CouplingType TektronixMDO4000BOscilloscope::GetChannelCoupl
 	return coupling;
 }
 
-void TektronixMDO4000BOscilloscope::SetChannelCoupling(size_t i, OscilloscopeChannel::CouplingType type)
+void TektronixMDOOscilloscope::SetChannelCoupling(size_t i, OscilloscopeChannel::CouplingType type)
 {
 	if(!IsAnalog(i))
 		return;
@@ -308,7 +340,7 @@ void TektronixMDO4000BOscilloscope::SetChannelCoupling(size_t i, OscilloscopeCha
 	m_channelCouplings[i] = type;
 }
 
-double TektronixMDO4000BOscilloscope::GetChannelAttenuation(size_t i)
+double TektronixMDOOscilloscope::GetChannelAttenuation(size_t i)
 {
 	if(!IsAnalog(i))
 		return 1;
@@ -332,7 +364,7 @@ double TektronixMDO4000BOscilloscope::GetChannelAttenuation(size_t i)
 	return atten;
 }
 
-void TektronixMDO4000BOscilloscope::SetChannelAttenuation(size_t i, double atten)
+void TektronixMDOOscilloscope::SetChannelAttenuation(size_t i, double atten)
 {
 	if(!IsAnalog(i))
 		return;
@@ -346,7 +378,7 @@ void TektronixMDO4000BOscilloscope::SetChannelAttenuation(size_t i, double atten
 		GetOscilloscopeChannel(i)->GetHwname() + ":PROBE:GAIN " + to_string(1.0 / atten));
 }
 
-unsigned int TektronixMDO4000BOscilloscope::GetChannelBandwidthLimit(size_t i)
+unsigned int TektronixMDOOscilloscope::GetChannelBandwidthLimit(size_t i)
 {
 	if(!IsAnalog(i))
 		return 0;
@@ -369,7 +401,7 @@ unsigned int TektronixMDO4000BOscilloscope::GetChannelBandwidthLimit(size_t i)
 	return bwl;
 }
 
-void TektronixMDO4000BOscilloscope::SetChannelBandwidthLimit(size_t i, unsigned int limit_mhz)
+void TektronixMDOOscilloscope::SetChannelBandwidthLimit(size_t i, unsigned int limit_mhz)
 {
 	if(!IsAnalog(i))
 		return;
@@ -388,7 +420,7 @@ void TektronixMDO4000BOscilloscope::SetChannelBandwidthLimit(size_t i, unsigned 
 	}
 }
 
-vector<unsigned int> TektronixMDO4000BOscilloscope::GetChannelBandwidthLimiters(size_t /*i*/)
+vector<unsigned int> TektronixMDOOscilloscope::GetChannelBandwidthLimiters(size_t /*i*/)
 {
 	vector<unsigned int> ret;
 	ret.push_back(20);		//20 MHz
@@ -400,7 +432,7 @@ vector<unsigned int> TektronixMDO4000BOscilloscope::GetChannelBandwidthLimiters(
 	return ret;
 }
 
-float TektronixMDO4000BOscilloscope::GetChannelOffset(size_t i, size_t /*stream*/)
+float TektronixMDOOscilloscope::GetChannelOffset(size_t i, size_t /*stream*/)
 {
 	//Check cache
 	{
@@ -434,7 +466,7 @@ float TektronixMDO4000BOscilloscope::GetChannelOffset(size_t i, size_t /*stream*
 	return offset;
 }
 
-void TektronixMDO4000BOscilloscope::SetChannelOffset(size_t i, size_t /*stream*/, float offset)
+void TektronixMDOOscilloscope::SetChannelOffset(size_t i, size_t /*stream*/, float offset)
 {
 	//RF spectrum channel. Note: RF:REFLEVEL expects dBm.
 	if(m_hasRF && (i == m_spectrumChannelBase))
@@ -457,7 +489,7 @@ void TektronixMDO4000BOscilloscope::SetChannelOffset(size_t i, size_t /*stream*/
 		GetOscilloscopeChannel(i)->GetHwname() + ":OFFS " + to_string(-offset));
 }
 
-float TektronixMDO4000BOscilloscope::GetChannelVoltageRange(size_t i, size_t /*stream*/)
+float TektronixMDOOscilloscope::GetChannelVoltageRange(size_t i, size_t /*stream*/)
 {
 	//Check cache
 	{
@@ -480,7 +512,7 @@ float TektronixMDO4000BOscilloscope::GetChannelVoltageRange(size_t i, size_t /*s
 	return TektronixOscilloscope::GetChannelVoltageRange(i, 0);
 }
 
-void TektronixMDO4000BOscilloscope::SetChannelVoltageRange(size_t i, size_t /*stream*/, float range)
+void TektronixMDOOscilloscope::SetChannelVoltageRange(size_t i, size_t /*stream*/, float range)
 {
 	//RF spectrum channel
 	if(m_hasRF && (i == m_spectrumChannelBase))
@@ -499,7 +531,7 @@ void TektronixMDO4000BOscilloscope::SetChannelVoltageRange(size_t i, size_t /*st
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Triggering
 
-vector<string> TektronixMDO4000BOscilloscope::GetTriggerTypes()
+vector<string> TektronixMDOOscilloscope::GetTriggerTypes()
 {
 	vector<string> ret;
 	ret.push_back("EDGE");
@@ -511,7 +543,7 @@ vector<string> TektronixMDO4000BOscilloscope::GetTriggerTypes()
 	return ret;
 }
 
-Oscilloscope::TriggerMode TektronixMDO4000BOscilloscope::PollTrigger()
+Oscilloscope::TriggerMode TektronixMDOOscilloscope::PollTrigger()
 {
 	if(!m_triggerArmed)
 		return TRIGGER_MODE_STOP;
@@ -534,12 +566,12 @@ Oscilloscope::TriggerMode TektronixMDO4000BOscilloscope::PollTrigger()
 	return TRIGGER_MODE_RUN;
 }
 
-bool TektronixMDO4000BOscilloscope::PeekTriggerArmed()
+bool TektronixMDOOscilloscope::PeekTriggerArmed()
 {
 	return m_triggerArmed;
 }
 
-void TektronixMDO4000BOscilloscope::Start()
+void TektronixMDOOscilloscope::Start()
 {
 	lock_guard<recursive_mutex> lock(m_transport->GetMutex());
 	lock_guard<recursive_mutex> lock2(m_cacheMutex);
@@ -550,7 +582,7 @@ void TektronixMDO4000BOscilloscope::Start()
 	m_triggerOneShot = false;
 }
 
-void TektronixMDO4000BOscilloscope::StartSingleTrigger()
+void TektronixMDOOscilloscope::StartSingleTrigger()
 {
 	lock_guard<recursive_mutex> lock(m_transport->GetMutex());
 	lock_guard<recursive_mutex> lock2(m_cacheMutex);
@@ -561,14 +593,14 @@ void TektronixMDO4000BOscilloscope::StartSingleTrigger()
 	m_triggerOneShot = true;
 }
 
-void TektronixMDO4000BOscilloscope::Stop()
+void TektronixMDOOscilloscope::Stop()
 {
 	m_triggerArmed = false;
 	m_transport->FlushCommandQueue();
 	m_transport->SendCommandImmediate("ACQ:STATE STOP");
 }
 
-void TektronixMDO4000BOscilloscope::ForceTrigger()
+void TektronixMDOOscilloscope::ForceTrigger()
 {
 	m_triggerArmed = true;
 	m_transport->SendCommandQueued("TRIG FORC");
@@ -577,13 +609,13 @@ void TektronixMDO4000BOscilloscope::ForceTrigger()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Preamble parsing
 
-bool TektronixMDO4000BOscilloscope::ReadWFMOutprePreamble(
+bool TektronixMDOOscilloscope::ReadWFMOutprePreamble(
 	const string& preamble_in, struct mdo4k_preamble& preamble_out)
 {
 	struct mdo4k_preamble& p = preamble_out;
 	memset(&p, 0, sizeof(p));
 
-	//MDO4000B WFMOutpre format:
+	//MDO WFMOutpre format:
 	// BYT_NR;BIT_NR;ENCDG;BN_FMT;BYT_OR;WFID;NR_PT;PT_FMT;PT_ORDER;XUNIT;XINCR;XZERO;PT_OFF;YUNIT;YMULT;YOFF;YZERO;DOMAIN;WFMTYPE;CENTERFREQ;SPAN
 
 	//Dump raw preamble on first failure so we can diagnose the format
@@ -592,11 +624,11 @@ bool TektronixMDO4000BOscilloscope::ReadWFMOutprePreamble(
 	size_t semicolons = std::count(preamble_in.begin(), preamble_in.end(), ';');
 	if(semicolons < 18)
 	{
-		LogWarning("MDO4000B: preamble too short (%zu semicolons)\n", semicolons);
+		LogWarning("MDO: preamble too short (%zu semicolons)\n", semicolons);
 		if(dump_count < 3)
 		{
 			dump_count++;
-			LogWarning("MDO4000B: raw preamble: %s\n", preamble_in.c_str());
+			LogWarning("MDO: raw preamble: %s\n", preamble_in.c_str());
 		}
 		return false;
 	}
@@ -631,8 +663,8 @@ bool TektronixMDO4000BOscilloscope::ReadWFMOutprePreamble(
 	if(dump_count < 3)
 	{
 		dump_count++;
-		LogWarning("MDO4000B: sscanf got %d fields, raw preamble: %s\n", read, preamble_in.c_str());
-		LogWarning("MDO4000B: stripped preamble: %s\n", buf.c_str());
+		LogWarning("MDO: sscanf got %d fields, raw preamble: %s\n", read, preamble_in.c_str());
+		LogWarning("MDO: stripped preamble: %s\n", buf.c_str());
 	}
 
 	//Retry with token-by-token parsing
@@ -696,14 +728,14 @@ bool TektronixMDO4000BOscilloscope::ReadWFMOutprePreamble(
 	if(field >= 21)
 		return true;
 
-	LogWarning("MDO4000B: token parser also failed (%d/%zu fields)\n", field, semicolons);
+	LogWarning("MDO: token parser also failed (%d/%zu fields)\n", field, semicolons);
 	return false;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Data acquisition
 
-bool TektronixMDO4000BOscilloscope::AcquireData()
+bool TektronixMDOOscilloscope::AcquireData()
 {
 	map<int, vector<WaveformBase*> > pending_waveforms;
 
@@ -763,7 +795,7 @@ bool TektronixMDO4000BOscilloscope::AcquireData()
 	return true;
 }
 
-bool TektronixMDO4000BOscilloscope::AcquireAnalogData(
+bool TektronixMDOOscilloscope::AcquireAnalogData(
 	map<int, vector<WaveformBase*> >& pending_waveforms)
 {
 	bool first = true;
@@ -816,13 +848,13 @@ bool TektronixMDO4000BOscilloscope::AcquireAnalogData(
 			int8_t* samples = (int8_t*)m_transport->SendCommandImmediateWithRawBlockReply("CURV?", nsamples);
 			if(samples == NULL)
 			{
-				LogWarning("MDO4000B: Didn't get samples for %s\n", chan->GetHwname().c_str());
+				LogWarning("MDO: Didn't get samples for %s\n", chan->GetHwname().c_str());
 				continue;
 			}
 
 			if(nsamples != (size_t)preamble.nr_pt)
 			{
-				LogWarning("MDO4000B: Wrong sample count for %s (got %zu, expected %d)\n",
+				LogWarning("MDO: Wrong sample count for %s (got %zu, expected %d)\n",
 					chan->GetHwname().c_str(), nsamples, preamble.nr_pt);
 				delete[] samples;
 				continue;
@@ -857,7 +889,7 @@ bool TektronixMDO4000BOscilloscope::AcquireAnalogData(
 
 		if(!succeeded)
 		{
-			LogError("MDO4000B: Failed to acquire %s\n", chan->GetHwname().c_str());
+			LogError("MDO: Failed to acquire %s\n", chan->GetHwname().c_str());
 			return false;
 		}
 	}
@@ -865,7 +897,7 @@ bool TektronixMDO4000BOscilloscope::AcquireAnalogData(
 	return true;
 }
 
-bool TektronixMDO4000BOscilloscope::AcquireDigitalData(
+bool TektronixMDOOscilloscope::AcquireDigitalData(
 	map<int, vector<WaveformBase*> >& pending_waveforms)
 {
 	if(m_digitalChannelCount == 0)
@@ -883,11 +915,11 @@ bool TektronixMDO4000BOscilloscope::AcquireDigitalData(
 	}
 	if(!anyEnabled)
 	{
-		LogDebug("MDO4000B: no digital channels enabled, skipping\n");
+		LogDebug("MDO: no digital channels enabled, skipping\n");
 		return true;
 	}
 
-	LogDebug("MDO4000B: acquiring digital data (%zu channels)\n", m_digitalChannelCount);
+	LogDebug("MDO: acquiring digital data (%zu channels)\n", m_digitalChannelCount);
 
 	bool succeeded = false;
 	for(int retry = 0; retry < 3; retry++)
@@ -910,7 +942,7 @@ bool TektronixMDO4000BOscilloscope::AcquireDigitalData(
 		uint8_t* samples = (uint8_t*)m_transport->SendCommandImmediateWithRawBlockReply("CURV?", msglen);
 		if(samples == NULL)
 		{
-			LogWarning("MDO4000B: Didn't get digital samples\n");
+			LogWarning("MDO: Didn't get digital samples\n");
 			continue;
 		}
 
@@ -987,14 +1019,14 @@ bool TektronixMDO4000BOscilloscope::AcquireDigitalData(
 
 	if(!succeeded)
 	{
-		LogError("MDO4000B: Failed to acquire digital data\n");
+		LogError("MDO: Failed to acquire digital data\n");
 		return false;
 	}
 
 	return true;
 }
 
-bool TektronixMDO4000BOscilloscope::AcquireRFData(
+bool TektronixMDOOscilloscope::AcquireRFData(
 	map<int, vector<WaveformBase*> >& pending_waveforms)
 {
 	//MSO/DPO4000B have no RF input; without this guard the phantom RF index would
@@ -1018,7 +1050,7 @@ bool TektronixMDO4000BOscilloscope::AcquireRFData(
 	mdo4k_preamble preamble;
 	if(!ReadWFMOutprePreamble(preamble_str, preamble))
 	{
-		LogWarning("MDO4000B: bad RF preamble\n");
+		LogWarning("MDO: bad RF preamble\n");
 		return false;
 	}
 
@@ -1026,7 +1058,7 @@ bool TektronixMDO4000BOscilloscope::AcquireRFData(
 	float* samples = (float*)m_transport->SendCommandImmediateWithRawBlockReply("CURV?", msglen);
 	if(samples == NULL)
 	{
-		LogWarning("MDO4000B: Didn't get RF samples\n");
+		LogWarning("MDO: Didn't get RF samples\n");
 		return false;
 	}
 
@@ -1064,13 +1096,13 @@ bool TektronixMDO4000BOscilloscope::AcquireRFData(
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Trigger configuration
 
-float TektronixMDO4000BOscilloscope::ReadTriggerLevel(OscilloscopeChannel* chan)
+float TektronixMDOOscilloscope::ReadTriggerLevel(OscilloscopeChannel* chan)
 {
 	return stof(m_transport->SendCommandQueuedWithReply(
 		string("TRIG:A:LEV:") + chan->GetHwname() + "?"));
 }
 
-void TektronixMDO4000BOscilloscope::SetTriggerLevel(Trigger* trig)
+void TektronixMDOOscilloscope::SetTriggerLevel(Trigger* trig)
 {
 	auto chan = trig->GetInput(0).m_channel;
 	if(chan)
@@ -1081,7 +1113,7 @@ void TektronixMDO4000BOscilloscope::SetTriggerLevel(Trigger* trig)
 	}
 }
 
-void TektronixMDO4000BOscilloscope::PushTrigger()
+void TektronixMDOOscilloscope::PushTrigger()
 {
 	auto trig = m_trigger;
 	if(!trig)
@@ -1108,14 +1140,14 @@ void TektronixMDO4000BOscilloscope::PushTrigger()
 		PushEdgeTrigger(et);
 	else
 	{
-		LogWarning("MDO4000B: unknown trigger type\n");
+		LogWarning("MDO: unknown trigger type\n");
 		return;
 	}
 
 	SetTriggerLevel(trig);
 }
 
-void TektronixMDO4000BOscilloscope::PullTrigger()
+void TektronixMDOOscilloscope::PullTrigger()
 {
 	string ttype = m_transport->SendCommandQueuedWithReply("TRIG:A:TYP?");
 	Trim(ttype);
@@ -1137,13 +1169,13 @@ void TektronixMDO4000BOscilloscope::PullTrigger()
 			PullSlewRateTrigger();
 		else
 		{
-			LogWarning("MDO4000B: unknown pulse trigger class %s\n", pclass.c_str());
+			LogWarning("MDO: unknown pulse trigger class %s\n", pclass.c_str());
 			m_trigger = nullptr;
 		}
 	}
 	else
 	{
-		LogWarning("MDO4000B: unknown trigger type %s\n", ttype.c_str());
+		LogWarning("MDO: unknown trigger type %s\n", ttype.c_str());
 		m_trigger = nullptr;
 	}
 }
@@ -1151,7 +1183,7 @@ void TektronixMDO4000BOscilloscope::PullTrigger()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Push/Pull trigger helpers
 
-void TektronixMDO4000BOscilloscope::PushEdgeTrigger(EdgeTrigger* trig)
+void TektronixMDOOscilloscope::PushEdgeTrigger(EdgeTrigger* trig)
 {
 	m_transport->SendCommandQueued("TRIG:A:TYP EDGE");
 
@@ -1177,7 +1209,7 @@ void TektronixMDO4000BOscilloscope::PushEdgeTrigger(EdgeTrigger* trig)
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Sample rate and depth
 
-uint64_t TektronixMDO4000BOscilloscope::GetSampleRate()
+uint64_t TektronixMDOOscilloscope::GetSampleRate()
 {
 	if(m_sampleRateValid)
 		return m_sampleRate;
@@ -1187,7 +1219,7 @@ uint64_t TektronixMDO4000BOscilloscope::GetSampleRate()
 	return m_sampleRate;
 }
 
-uint64_t TektronixMDO4000BOscilloscope::GetSampleDepth()
+uint64_t TektronixMDOOscilloscope::GetSampleDepth()
 {
 	if(m_sampleDepthValid)
 		return m_sampleDepth;
@@ -1199,7 +1231,7 @@ uint64_t TektronixMDO4000BOscilloscope::GetSampleDepth()
 	return m_sampleDepth;
 }
 
-void TektronixMDO4000BOscilloscope::SetSampleDepth(uint64_t depth)
+void TektronixMDOOscilloscope::SetSampleDepth(uint64_t depth)
 {
 	lock_guard<recursive_mutex> lock(m_cacheMutex);
 	m_sampleDepth = depth;
@@ -1211,7 +1243,7 @@ void TektronixMDO4000BOscilloscope::SetSampleDepth(uint64_t depth)
 	m_transport->SendCommandQueued(string("DAT:STOP ") + to_string(depth));
 }
 
-void TektronixMDO4000BOscilloscope::SetSampleRate(uint64_t rate)
+void TektronixMDOOscilloscope::SetSampleRate(uint64_t rate)
 {
 	//HOR:SAMPLER is query-only on this family, so the sample rate is realized by
 	//choosing the record length and time/div: rate = depth / (time_per_div * 10).
@@ -1245,7 +1277,7 @@ void TektronixMDO4000BOscilloscope::SetSampleRate(uint64_t rate)
 	{
 		//No supported record length and time/div can produce a rate near this value;
 		//refuse rather than silently keep the current configuration
-		LogWarning("MDO4000B: no record length/timebase combination found for %zu S/s\n",
+		LogWarning("MDO: no record length/timebase combination found for %zu S/s\n",
 			static_cast<size_t>(rate));
 		return;
 	}
@@ -1259,7 +1291,7 @@ void TektronixMDO4000BOscilloscope::SetSampleRate(uint64_t rate)
 	m_sampleDepthValid = false;
 }
 
-void TektronixMDO4000BOscilloscope::SetTriggerOffset(int64_t offset)
+void TektronixMDOOscilloscope::SetTriggerOffset(int64_t offset)
 {
 	double capture_len_sec = 1.0 * GetSampleDepth() / GetSampleRate();
 	double offset_sec = offset * SECONDS_PER_FS;
@@ -1270,7 +1302,7 @@ void TektronixMDO4000BOscilloscope::SetTriggerOffset(int64_t offset)
 	m_triggerOffsetValid = false;
 }
 
-void TektronixMDO4000BOscilloscope::PushPulseWidthTrigger(PulseWidthTrigger* trig)
+void TektronixMDOOscilloscope::PushPulseWidthTrigger(PulseWidthTrigger* trig)
 {
 	m_transport->SendCommandQueued("TRIG:A:TYP PUL");
 	m_transport->SendCommandQueued("TRIG:A:PUL:CLAS WID");
@@ -1326,7 +1358,7 @@ static string NormalizeTekEnumReply(const string& reply)
 	return ret;
 }
 
-void TektronixMDO4000BOscilloscope::PullPulseWidthTrigger()
+void TektronixMDOOscilloscope::PullPulseWidthTrigger()
 {
 	PulseWidthTrigger* et = RecreateTrigger<PulseWidthTrigger>();
 
@@ -1366,7 +1398,7 @@ void TektronixMDO4000BOscilloscope::PullPulseWidthTrigger()
 	et->SetUpperBound(fs.ParseString(m_transport->SendCommandQueuedWithReply("TRIG:A:PUL:WID?")));
 }
 
-void TektronixMDO4000BOscilloscope::PushDropoutTrigger(DropoutTrigger* trig)
+void TektronixMDOOscilloscope::PushDropoutTrigger(DropoutTrigger* trig)
 {
 	m_transport->SendCommandQueued("TRIG:A:TYP PUL");
 	m_transport->SendCommandQueued("TRIG:A:PUL:CLAS TIM");
@@ -1384,7 +1416,7 @@ void TektronixMDO4000BOscilloscope::PushDropoutTrigger(DropoutTrigger* trig)
 	m_transport->SendCommandQueued(string("TRIG:A:TIME:TIM ") + to_string_sci(trig->GetDropoutTime()));
 }
 
-void TektronixMDO4000BOscilloscope::PullDropoutTrigger()
+void TektronixMDOOscilloscope::PullDropoutTrigger()
 {
 	DropoutTrigger* et = RecreateTrigger<DropoutTrigger>();
 
@@ -1413,7 +1445,7 @@ void TektronixMDO4000BOscilloscope::PullDropoutTrigger()
 	et->SetDropoutTime(fs.ParseString(m_transport->SendCommandQueuedWithReply("TRIG:A:TIME:TIM?")));
 }
 
-void TektronixMDO4000BOscilloscope::PushRuntTrigger(RuntTrigger* trig)
+void TektronixMDOOscilloscope::PushRuntTrigger(RuntTrigger* trig)
 {
 	m_transport->SendCommandQueued("TRIG:A:TYP PUL");
 	m_transport->SendCommandQueued("TRIG:A:PUL:CLAS RUN");
@@ -1435,7 +1467,7 @@ void TektronixMDO4000BOscilloscope::PushRuntTrigger(RuntTrigger* trig)
 		m_transport->SendCommandQueued("TRIG:A:RUN:POL NEG");
 }
 
-void TektronixMDO4000BOscilloscope::PullRuntTrigger()
+void TektronixMDOOscilloscope::PullRuntTrigger()
 {
 	RuntTrigger* et = RecreateTrigger<RuntTrigger>();
 
@@ -1461,7 +1493,7 @@ void TektronixMDO4000BOscilloscope::PullRuntTrigger()
 		et->SetSlope(RuntTrigger::EDGE_FALLING);
 }
 
-void TektronixMDO4000BOscilloscope::PushSlewRateTrigger(SlewRateTrigger* trig)
+void TektronixMDOOscilloscope::PushSlewRateTrigger(SlewRateTrigger* trig)
 {
 	m_transport->SendCommandQueued("TRIG:A:TYP PUL");
 	m_transport->SendCommandQueued("TRIG:A:PUL:CLAS TRA");
@@ -1506,7 +1538,7 @@ void TektronixMDO4000BOscilloscope::PushSlewRateTrigger(SlewRateTrigger* trig)
 		to_string_sci(trig->GetLowerInterval() * SECONDS_PER_FS));
 }
 
-void TektronixMDO4000BOscilloscope::PullSlewRateTrigger()
+void TektronixMDOOscilloscope::PullSlewRateTrigger()
 {
 	SlewRateTrigger* et = RecreateTrigger<SlewRateTrigger>();
 
@@ -1551,18 +1583,18 @@ void TektronixMDO4000BOscilloscope::PullSlewRateTrigger()
 	et->SetUpperInterval(delt);
 }
 
-void TektronixMDO4000BOscilloscope::PushWindowTrigger(WindowTrigger* /*trig*/)
+void TektronixMDOOscilloscope::PushWindowTrigger(WindowTrigger* /*trig*/)
 {
-	LogWarning("MDO4000B: window trigger not supported\n");
+	LogWarning("MDO: window trigger not supported\n");
 }
 
-void TektronixMDO4000BOscilloscope::PullWindowTrigger()
+void TektronixMDOOscilloscope::PullWindowTrigger()
 {
-	LogWarning("MDO4000B: window trigger not supported, cannot pull\n");
+	LogWarning("MDO: window trigger not supported, cannot pull\n");
 	m_trigger = NULL;
 }
 
-void TektronixMDO4000BOscilloscope::PullEdgeTrigger()
+void TektronixMDOOscilloscope::PullEdgeTrigger()
 {
 	EdgeTrigger* trig = RecreateTrigger<EdgeTrigger>();
 	trig->SetType(EdgeTrigger::EDGE_RISING);
@@ -1582,7 +1614,7 @@ void TektronixMDO4000BOscilloscope::PullEdgeTrigger()
 		trig->SetType(EdgeTrigger::EDGE_ANY);
 }
 
-int64_t TektronixMDO4000BOscilloscope::GetTriggerOffset()
+int64_t TektronixMDOOscilloscope::GetTriggerOffset()
 {
 	if(m_triggerOffsetValid)
 		return m_triggerOffset;
@@ -1600,12 +1632,12 @@ int64_t TektronixMDO4000BOscilloscope::GetTriggerOffset()
 	return m_triggerOffset;
 }
 
-bool TektronixMDO4000BOscilloscope::HasInterleavingControls()
+bool TektronixMDOOscilloscope::HasInterleavingControls()
 {
 	return false;
 }
 
-uint64_t TektronixMDO4000BOscilloscope::GetMaxAnalogSampleRate()
+uint64_t TektronixMDOOscilloscope::GetMaxAnalogSampleRate()
 {
 	if(m_maxSampleRateValid)
 		return m_maxSampleRate;
@@ -1623,7 +1655,7 @@ uint64_t TektronixMDO4000BOscilloscope::GetMaxAnalogSampleRate()
 			m_maxSampleRateValid = true;
 			return m_maxSampleRate;
 		}
-		LogWarning("MDO4000B: CONFIG:ANALO:MAXSAMPLER? returned an invalid rate, assuming 2.5 GS/s\n");
+		LogWarning("MDO: CONFIG:ANALO:MAXSAMPLER? returned an invalid rate, assuming 2.5 GS/s\n");
 	}
 	catch(const exception& e)
 	{
@@ -1631,7 +1663,7 @@ uint64_t TektronixMDO4000BOscilloscope::GetMaxAnalogSampleRate()
 		//models are capable of 5 GS/s, but under-listing rates is safer than offering
 		//ones the ADC cannot achieve; the UI reads back the actual rate anyway.
 		LogWarning(
-			"MDO4000B: CONFIG:ANALO:MAXSAMPLER? failed (%s), assuming 2.5 GS/s\n",
+			"MDO: CONFIG:ANALO:MAXSAMPLER? failed (%s), assuming 2.5 GS/s\n",
 			e.what());
 	}
 	m_maxSampleRate = 2500000000ULL;
@@ -1639,7 +1671,7 @@ uint64_t TektronixMDO4000BOscilloscope::GetMaxAnalogSampleRate()
 	return m_maxSampleRate;
 }
 
-vector<double> TektronixMDO4000BOscilloscope::GetTimebaseScales()
+vector<double> TektronixMDOOscilloscope::GetTimebaseScales()
 {
 	//1-2-5 time/div steps inside the manual's HOR:SCALE argument range (400 ps to
 	//1000 s). Sub-ns scales are skipped: any rate they could produce exceeds the ADC
@@ -1660,7 +1692,7 @@ vector<double> TektronixMDO4000BOscilloscope::GetTimebaseScales()
 	return ret;
 }
 
-vector<uint64_t> TektronixMDO4000BOscilloscope::GetSampleRatesNonInterleaved()
+vector<uint64_t> TektronixMDOOscilloscope::GetSampleRatesNonInterleaved()
 {
 	//HOR:SAMPLER is query-only on this family (the manual says the command form is
 	//ignored), so the sample rate can only be changed via the record length and
@@ -1694,7 +1726,7 @@ vector<uint64_t> TektronixMDO4000BOscilloscope::GetSampleRatesNonInterleaved()
 	return vector<uint64_t>(rates.begin(), rates.end());
 }
 
-vector<uint64_t> TektronixMDO4000BOscilloscope::GetSupportedSampleDepths()
+vector<uint64_t> TektronixMDOOscilloscope::GetSupportedSampleDepths()
 {
 	if(m_supportedSampleDepthsValid)
 		return m_supportedSampleDepths;
@@ -1726,7 +1758,7 @@ vector<uint64_t> TektronixMDO4000BOscilloscope::GetSupportedSampleDepths()
 	}
 	catch(const exception& e)
 	{
-		LogWarning("MDO4000B: CONFIG:ANALO:RECLENS? failed (%s), using default record lengths\n",
+		LogWarning("MDO: CONFIG:ANALO:RECLENS? failed (%s), using default record lengths\n",
 			e.what());
 		m_supportedSampleDepths.clear();
 	}
@@ -1750,7 +1782,7 @@ vector<uint64_t> TektronixMDO4000BOscilloscope::GetSupportedSampleDepths()
 	return m_supportedSampleDepths;
 }
 
-vector<uint64_t> TektronixMDO4000BOscilloscope::GetSampleDepthsNonInterleaved()
+vector<uint64_t> TektronixMDOOscilloscope::GetSampleDepthsNonInterleaved()
 {
 	return GetSupportedSampleDepths();
 }
@@ -1758,7 +1790,7 @@ vector<uint64_t> TektronixMDO4000BOscilloscope::GetSampleDepthsNonInterleaved()
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Digital (logic analyzer)
 
-vector<Oscilloscope::DigitalBank> TektronixMDO4000BOscilloscope::GetDigitalBanks()
+vector<Oscilloscope::DigitalBank> TektronixMDOOscilloscope::GetDigitalBanks()
 {
 	vector<DigitalBank> ret;
 	if(m_digitalChannelCount > 0)
@@ -1775,7 +1807,7 @@ vector<Oscilloscope::DigitalBank> TektronixMDO4000BOscilloscope::GetDigitalBanks
 	return ret;
 }
 
-Oscilloscope::DigitalBank TektronixMDO4000BOscilloscope::GetDigitalBank(size_t channel)
+Oscilloscope::DigitalBank TektronixMDOOscilloscope::GetDigitalBank(size_t channel)
 {
 	DigitalBank bank;
 	if(IsDigitalChannel(channel))
@@ -1787,17 +1819,17 @@ Oscilloscope::DigitalBank TektronixMDO4000BOscilloscope::GetDigitalBank(size_t c
 	return bank;
 }
 
-bool TektronixMDO4000BOscilloscope::IsDigitalHysteresisConfigurable()
+bool TektronixMDOOscilloscope::IsDigitalHysteresisConfigurable()
 {
 	return false;
 }
 
-bool TektronixMDO4000BOscilloscope::IsDigitalThresholdConfigurable()
+bool TektronixMDOOscilloscope::IsDigitalThresholdConfigurable()
 {
 	return (m_digitalChannelCount > 0);
 }
 
-float TektronixMDO4000BOscilloscope::GetDigitalThreshold(size_t channel)
+float TektronixMDOOscilloscope::GetDigitalThreshold(size_t channel)
 {
 	if(IsDigitalChannel(channel))
 	{
@@ -1808,7 +1840,7 @@ float TektronixMDO4000BOscilloscope::GetDigitalThreshold(size_t channel)
 	return 1.4;	//Default TTL threshold
 }
 
-void TektronixMDO4000BOscilloscope::SetDigitalThreshold(size_t channel, float level)
+void TektronixMDOOscilloscope::SetDigitalThreshold(size_t channel, float level)
 {
 	if(IsDigitalChannel(channel))
 	{
@@ -1821,13 +1853,13 @@ void TektronixMDO4000BOscilloscope::SetDigitalThreshold(size_t channel, float le
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Spectrum analyzer (RF input)
 
-bool TektronixMDO4000BOscilloscope::HasFrequencyControls()
+bool TektronixMDOOscilloscope::HasFrequencyControls()
 {
 	//Only the MDO series has the integrated RF spectrum analyzer
 	return m_hasRF;
 }
 
-void TektronixMDO4000BOscilloscope::SetSpan(int64_t span)
+void TektronixMDOOscilloscope::SetSpan(int64_t span)
 {
 	if(!m_hasRF)
 		return;
@@ -1838,7 +1870,7 @@ void TektronixMDO4000BOscilloscope::SetSpan(int64_t span)
 	m_spanValid = true;
 }
 
-int64_t TektronixMDO4000BOscilloscope::GetSpan()
+int64_t TektronixMDOOscilloscope::GetSpan()
 {
 	if(!m_hasRF)
 		return 1;	//match the base class default
@@ -1851,7 +1883,7 @@ int64_t TektronixMDO4000BOscilloscope::GetSpan()
 	return m_span;
 }
 
-void TektronixMDO4000BOscilloscope::SetCenterFrequency(size_t channel, int64_t freq)
+void TektronixMDOOscilloscope::SetCenterFrequency(size_t channel, int64_t freq)
 {
 	if(!m_hasRF)
 		return;
@@ -1861,7 +1893,7 @@ void TektronixMDO4000BOscilloscope::SetCenterFrequency(size_t channel, int64_t f
 	m_rbwValid = false;
 }
 
-int64_t TektronixMDO4000BOscilloscope::GetCenterFrequency(size_t channel)
+int64_t TektronixMDOOscilloscope::GetCenterFrequency(size_t channel)
 {
 	if(!m_hasRF)
 		return 0;	//match the base class default
@@ -1875,7 +1907,7 @@ int64_t TektronixMDO4000BOscilloscope::GetCenterFrequency(size_t channel)
 	return freq;
 }
 
-void TektronixMDO4000BOscilloscope::SetResolutionBandwidth(int64_t rbw)
+void TektronixMDOOscilloscope::SetResolutionBandwidth(int64_t rbw)
 {
 	if(!m_hasRF)
 		return;
@@ -1887,7 +1919,7 @@ void TektronixMDO4000BOscilloscope::SetResolutionBandwidth(int64_t rbw)
 	m_rbwValid = true;
 }
 
-int64_t TektronixMDO4000BOscilloscope::GetResolutionBandwidth()
+int64_t TektronixMDOOscilloscope::GetResolutionBandwidth()
 {
 	if(!m_hasRF)
 		return 1;	//match the base class default

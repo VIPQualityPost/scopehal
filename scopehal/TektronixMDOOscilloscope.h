@@ -30,20 +30,20 @@
 /**
 	@file
 	@author Andrew D. Zonenberg
-	@brief Declaration of TektronixMDO4000BOscilloscope
+	@brief Declaration of TektronixMDOOscilloscope
 
 	@ingroup scopedrivers
  */
 
-#ifndef TektronixMDO4000BOscilloscope_h
-#define TektronixMDO4000BOscilloscope_h
+#ifndef TektronixMDOOscilloscope_h
+#define TektronixMDOOscilloscope_h
 
 #include <TektronixOscilloscope.h>
 
 /**
 	@brief Driver for Tektronix MDO4000/B/C and MSO/DPO4000B series oscilloscopes
 
-	The MDO4000B is a Mixed Domain Oscilloscope with 4 analog channels,
+	The MDO is a Mixed Domain Oscilloscope with 4 analog channels,
 	optional 16-channel digital input (MSO), built-in RF spectrum analyzer,
 	optional DVM, and optional AFG.
 
@@ -56,16 +56,16 @@
 
 	@ingroup scopedrivers
  */
-class TektronixMDO4000BOscilloscope
+class TektronixMDOOscilloscope
 	: public virtual TektronixOscilloscope
 {
 public:
-	TektronixMDO4000BOscilloscope(SCPITransport* transport);
-	virtual ~TektronixMDO4000BOscilloscope();
+	TektronixMDOOscilloscope(SCPITransport* transport);
+	virtual ~TektronixMDOOscilloscope();
 
 	//not copyable or assignable
-	TektronixMDO4000BOscilloscope(const TektronixMDO4000BOscilloscope& rhs) =delete;
-	TektronixMDO4000BOscilloscope& operator=(const TektronixMDO4000BOscilloscope& rhs) =delete;
+	TektronixMDOOscilloscope(const TektronixMDOOscilloscope& rhs) =delete;
+	TektronixMDOOscilloscope& operator=(const TektronixMDOOscilloscope& rhs) =delete;
 
 public:
 
@@ -108,7 +108,7 @@ public:
 	virtual int64_t GetTriggerOffset() override;
 	virtual bool HasInterleavingControls() override;
 
-	//Logic analyzer - MDO4000B supports D0-D15 via MSO pod
+	//Logic analyzer - MDO supports D0-D15 via MSO pod
 	virtual std::vector<Oscilloscope::DigitalBank> GetDigitalBanks() override;
 	virtual Oscilloscope::DigitalBank GetDigitalBank(size_t channel) override;
 	virtual bool IsDigitalHysteresisConfigurable() override;
@@ -127,11 +127,11 @@ public:
 
 public:
 	static std::string GetDriverNameInternal();
-	OSCILLOSCOPE_INITPROC(TektronixMDO4000BOscilloscope);
+	OSCILLOSCOPE_INITPROC(TektronixMDOOscilloscope);
 
 protected:
 
-	///@brief Waveform preamble for the MDO4000B WFMOutpre format
+	///@brief Waveform preamble for the MDO WFMOutpre format
 	struct mdo4k_preamble
 	{
 		int byte_nr;
@@ -170,6 +170,10 @@ protected:
 	///@brief True if the instrument has an integrated RF spectrum analyzer
 	///(MDO series only; MSO/DPO4000B models have no RF input)
 	bool m_hasRF = false;
+
+	///@brief True if the instrument has an Aux In connector usable as an external
+	///trigger input (MSO/DPO4000B series, 2-channel MDO3000, option-less MDO4000C)
+	bool m_hasAuxIn = false;
 
 	///@brief Query and cache the supported record lengths (CONFIG:ANALO:RECLENS?)
 	std::vector<uint64_t> GetSupportedSampleDepths();

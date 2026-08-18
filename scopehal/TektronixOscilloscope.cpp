@@ -265,6 +265,12 @@ TektronixOscilloscope::TektronixOscilloscope(SCPITransport* transport)
 			m_channels.push_back(m_extTrigChannel);
 			break;
 
+		//The MDO family's external trigger input (Aux In connector) exists only
+		//on some models; the MDO driver creates the channel itself when present
+		case FAMILY_MDO4:
+			m_extTrigChannel = nullptr;
+			break;
+
 		default:
 			m_extTrigChannel = new OscilloscopeChannel(
 				this,
@@ -314,7 +320,7 @@ TektronixOscilloscope::TektronixOscilloscope(SCPITransport* transport)
 	}
 	else
 	{
-		//MDO4000B always has DVM and never has AFG
+		//MDO family always has DVM and never has AFG
 		LogDebug(" * MDO4000 has DVM\n");
 		m_hasDVM = true;
 		m_hasAFG = false;
