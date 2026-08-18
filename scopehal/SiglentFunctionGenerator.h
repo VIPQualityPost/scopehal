@@ -37,6 +37,8 @@
 #ifndef SiglentFunctionGenerator_h
 #define SiglentFunctionGenerator_h
 
+#include <chrono>
+
 /**
 	@brief A Siglent SDG function generator
 	@ingroup funcdrivers
@@ -173,6 +175,10 @@ protected:
 
 	bool m_cachedCombine[2];
 	bool m_cachedCombineValid[2];
+
+	//Time of the last CMBN? poll on each channel. Used to rate-limit the
+	//front-panel combine state polling in AcquireData().
+	std::chrono::steady_clock::time_point m_lastCombinePoll[2];
 
 	bool m_supportsCHDR;
 

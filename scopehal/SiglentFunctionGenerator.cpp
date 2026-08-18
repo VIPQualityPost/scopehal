@@ -39,6 +39,11 @@
 
 using namespace std;
 
+//Minimum interval between CMBN? read-backs of the front-panel combine state.
+//The instrument thread calls AcquireData() at a very high rate; without rate
+//limiting, every poll would be a blocking SCPI round-trip per channel.
+static constexpr auto kSiglentCombinePollInterval = std::chrono::milliseconds(1000);
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Construction / destruction
 
@@ -76,6 +81,12 @@ SiglentFunctionGenerator::SiglentFunctionGenerator(SCPITransport* transport)
 		auto chan = dynamic_cast<SiglentFunctionGeneratorChannel*>(m_channels[i]);
 		if(chan)
 			chan->GetParam("Combine") = FilterParameter(FilterParameter::TYPE_BOOL, Unit(Unit::UNIT_COUNTS));
+
+		//Defer the first CMBN? poll until after device bring-up so no wave combine
+		//SCPI traffic happens at connect time (this used to send the instrument's
+		//front panel to the wave combine menu). Subsequent polls are rate limited
+		//in AcquireData().
+		m_lastCombinePoll[i] = std::chrono::steady_clock::now();
 	}
 }
 
@@ -111,25 +122,37 @@ bool SiglentFunctionGenerator::AcquireData()
 		auto& param = pchan->GetParam("Combine");
 		bool uiRequest = param.GetBoolVal();
 
-		//Push UI parameter change to hardware
-		if(!m_cachedCombineValid[i] || (uiRequest != m_cachedCombine[i]))
+		//Push UI parameter changes to hardware, but only once we know the current
+		//hardware state (i.e. after the first read-back). This keeps connect-time
+		//behavior read-only: the front-panel state is adopted instead of being
+		//overwritten with the default (off). Previously the first poll after
+		//connect wrote CMBN OFF unconditionally, which left the instrument's front
+		//panel on the wave combine menu and silently disabled an active combine.
+		if(m_cachedCombineValid[i] && (uiRequest != m_cachedCombine[i]))
 		{
 			if(uiRequest)
 				m_transport->SendCommandQueued(cname + ":CMBN ON");
 			else
 				m_transport->SendCommandQueued(cname + ":CMBN OFF");
 			m_cachedCombine[i] = uiRequest;
-			m_cachedCombineValid[i] = true;
 		}
 
-		//Read hardware state back (in case it was changed from the front panel)
+		//Read the hardware state back in case it was changed from the front panel.
+		//The instrument thread calls AcquireData() at a very high rate, and each
+		//CMBN? is a blocking SCPI round-trip, so rate-limit this polling. Without
+		//the limit this floods the instrument's SCPI server and stalls the
+		//instrument thread, freezing updates to the generator state in the UI.
+		auto now = std::chrono::steady_clock::now();
+		if(now - m_lastCombinePoll[i] < kSiglentCombinePollInterval)
+			continue;
+
+		m_lastCombinePoll[i] = now;
 		auto reply = RemoveHeader(m_transport->SendCommandQueuedWithReply(cname + ":CMBN?"));
 		bool hwState = (Trim(reply) == "ON");
 		if(hwState != param.GetBoolVal())
-		{
 			param.SetBoolVal(hwState);
-			m_cachedCombine[i] = hwState;
-		}
+		m_cachedCombine[i] = hwState;
+		m_cachedCombineValid[i] = true;
 	}
 
 	return true;
